@@ -1,0 +1,572 @@
+---
+title: "FF_datacheck"
+date: "13 September 2016"
+output: html_document
+---
+```{r, echo=FALSE, message = FALSE, warning = FALSE}
+setwd("~/Documents/frequent flyer/data_flyers")
+library(survival)
+library(xtable)
+library(Hmisc)
+library(gridBase, gridExtra)
+library(lattice)
+library(lubridate)
+library(dplyr)
+```
+
+Ned passed these two files to Franck for NLP analysis:
+```{r}
+#Loading notes
+dcsum <- read.csv("dischargeSummariesClean.csv")
+#nursum <- read.csv("nursingNotesClean.csv")
+```
+
+We want to find out the level of agreement within each pair of annotators/operators; ie between:
+1. ETM and JTW (Ned and Joy)
+2. JF and JW (John Foote and Jonathan Welt)
+
+```{r}
+#Discharge summaries annotated by each operator:expect ETM & JTW and JF & JW to have annotated the same number of notes - but big differences. ?why
+summary(dcsum$operator)
+
+#Number of discharge annotations:
+nrow(dcsum)
+#Number of unique hospital admissions annotated:
+length(unique(dcsum$Hospital.Admission.ID))
+#dcsum$Hospital.Admission.ID is complete
+summary(is.na(dcsum$Hospital.Admission.ID))
+#dcsum$ICU.ID is complete
+summary(is.na(dcsum$ICU.ID))
+length(unique(dcsum$ICU.ID))
+#dcsum$Subject.ID is complete
+summary(is.na(dcsum$Subject.ID))
+length(unique(dcsum$Subject.ID))
+#dcsum$Chart.time is complete
+summary(is.na(dcsum$Chart.time))
+length(unique(dcsum$Chart.time))
+
+#Subset notes by operator
+ETM <- dcsum[dcsum$operator == "ETM",]
+JTW <- dcsum[dcsum$operator == "JTW",]
+JF <- dcsum[dcsum$operator == "JF",]
+JW <- dcsum[dcsum$operator == "JW",]
+
+#There are duplicated notes annotated by each operator:
+ETMdup <- ETM[duplicated(ETM$ICU.ID),]; nrow(ETMdup)
+JTWdup <- JTW[duplicated(JTW$ICU.ID),]; nrow(JTWdup)
+JFdup <- JF[duplicated(JF$ICU.ID),]; nrow(JFdup)
+JWdup <- JW[duplicated(JW$ICU.ID),]; nrow(JWdup)
+#Create subset with all the duplicates from dcsum
+dcsum_dup <- dcsum[duplicated(dcsum$ICU.ID),]; nrow(dcsum_dup)
+length(unique(dcsum$ICU.ID))
+```
+
+#Questions for Ned:
+
+1. Did you just rbind all the results file together to get the combined discharge and nursing .csv files?
+Ned - I did rbind it-- I loaded a dataframe, bound it, loaded a new one, bound it, etc.
+
+2. How come Jonathan annotated 560 notes and John Foote only 338 notes?
+Joy - We are missing some notes from everyone. John is looking through his old computer to see if he could dig up the files. 
+
+3. Where are the notes Patrick annotated? I recall he annotated some new notes and reviewed some of our unsure notes. Are the new notes Patrick annotated listed under JW, hence he appeared to have annotated 200+ more notes than John? I don't see Patrick as an operator.
+Ned doesn't know where they are so Patrick will have to send the annotated unsured notes to me again.
+Also after doing some digging around - every annotator (ETM, JTW, JF, JW) is supposed to have annotated 650 notes (including duplicates sent out by Ned).
+
+#Interim Summary:
+
+```{r, echo=FALSE}
+print(paste("Summary: It would appear that Ned only sent us notes that have all of ICU.ID, Hospital.Admission.ID, Subject.ID and Chart.time to be annotated. We have a total", nrow(dcsum), "discharge annotations from all annotators, including any duplicated annotations by each operator. However, we are still missing some annotated notes from each operator - there should be 2600 annotated discharge notes if we have all the results files back. With what we have so far, there are", length(unique(dcsum$ICU.ID)), "unique discharge summary notes annotated, from", length(unique(dcsum$Hospital.Admission.ID)), "unique hospital or icu admissions. There are only", length(unique(dcsum$Subject.ID)), "unique patients. Each operator annotated some discharge notes (ETM =", nrow(ETMdup), ", JTW =", nrow(JTWdup), ", JF =", nrow(JFdup), ", JW =", nrow(JWdup), ") more than once. This duplication consists of a total of", nrow(dcsum_dup), "of the annotated notes. Could the NLP people use these intra-operator duplicated notes to get a sense intra-operator variability?", sep = " "))
+```
+
+# Remaining missing notes and notes with only one annotator
+
+```{r}
+#setwd("~/Documents/frequent flyer/data_flyers")
+
+#read in hospital admission ids of notes annotated by only one person from AllDischargeFinal.csv
+#"SingleAnnotatorNotes.csv" was pulled by Yeran
+annot1 <- unique(read.csv("SingleAnnotatorNotes.csv")$Hospital.Admission.ID)
+length(annot1)
+
+#read in hadm.id of remaining missing notes batches
+miss1 <- unique(read.csv("ejDis16Mar16.csv")$hadm.id); length(miss1)
+miss2 <- unique(read.csv("JJdis22OCT15.csv")$hadm.id); length(miss2)
+miss3 <- unique(read.csv("jjDis16Mar16.csv")$hadm.id); length(miss3)
+remainmiss <- unique(c(miss1, miss2, miss3)); length(remainmiss)
+
+#Remain missing ID as a subset of single annotator ID
+missINannot1 <- remainmiss %in% annot1
+missID <- remainmiss[missINannot1]
+length(missID)
+
+miss1_id <- miss1[miss1 %in% annot1]; length(miss1_id)
+miss2_id <- miss2[miss2 %in% annot1]; length(miss2_id) #strange that all notes in "JJdis22OCT15.csv" seem to have been annotated twice already but they shouldn't have been...
+miss3_id <- miss3[miss3 %in% annot1]; length(miss3_id)
+
+#single annotator ID not in Remain missing ID
+annot1INmiss <- !(annot1 %in% remainmiss)
+missID2 <- annot1[annot1INmiss];length(missID2)
+#Where/which batch did these 43 IDs come from then?
+
+#I'll try subsetting out notes annotated once from AllDischargeFinal27Sep16.csv myself.
+alldis <- read.csv("AllDischargeFinal27Sep16.csv")
+by_hadmid <- group_by(alldis, Hospital.Admission.ID)
+annot_num <- data.frame(summarise(by_hadmid, numNote <- n()))
+str(annot_num)
+colnames(annot_num) <- c("hadm.id", "num.notes")
+annot_once <- filter(annot_num, num.notes == 1); str(annot_once)
+annot1.id <- unique(annot_once$hadm.id); length(annot1.id)
+
+
+#Check which note still needs annotating 
+Miss1_id <- miss1[miss1 %in% annot1.id]; length(Miss1_id)
+# So Jonathan can just keep annotating his missing batch
+Miss2_id <- miss2[miss2 %in% annot1.id]; length(Miss2_id) 
+# So all the notes in this batch has been annotated at least twice already
+# but how...?
+Miss3_id <- miss3[miss3 %in% annot1.id]; length(Miss3_id)
+#Will split this batch up to two as Patrick and David requested.
+Miss4_id <- annot1.id[!(annot1.id %in% remainmiss)]; length(Miss4_id)
+# So where do these 41 missing notes come from?
+
+#See which notes are in miss2
+length(unique(miss2))
+batch2 <- alldis[alldis$Hospital.Admission.ID %in% miss2,]
+nrow(batch2)
+length(unique(batch2$Hospital.Admission.ID))
+length(unique(batch2$batch.id))
+summary(batch2$batch.id)
+by_id <- group_by(batch2, Hospital.Admission.ID)
+check <- data.frame(summarize(by_id, num <- n()))
+colnames(check) <- c("hadm.id", "num.notes")
+check <- arrange(check, num.notes)
+nrow(check)
+head(check)
+summary(check$num.notes)
+#All have been annotated at least 3 times
+#But do they all have at least 2 operators each?
+noteop <- unique(batch2[, c("Hospital.Admission.ID", "operator")])
+by_op <- noteop %>% group_by(Hospital.Admission.ID) %>% summarise(num_op <- n()) %>% data.frame()
+colnames(by_op) <- c("hadm.id", "num.notes")
+summary(by_op$num.notes)
+#All were annotated by 3 different operators (ETM, JTW and JWW)
+#Suffice to say that this batch from "JJdis22OCT15.csv" is not missing
+
+#So the real missing batch is Miss4_id
+batch4 <- alldis[alldis$Hospital.Admission.ID %in% Miss4_id,]
+nrow(batch4)
+length(unique(batch4$Hospital.Admission.ID))
+length(unique(batch4$batch.id))
+summary(batch4$batch.id)
+by_id2 <- group_by(batch4, Hospital.Admission.ID)
+check2 <- data.frame(summarize(by_id2, number <- n()))
+colnames(check2) <- c("hadm.id", "num.notes")
+check2 <- arrange(check2, num.notes)
+nrow(check2)
+head(check2)
+summary(check2$num.notes)
+# Now let's write batch4 into a suitable format for Ned's Python program
+# Read in the .csv file with all the unannotated notes
+summary(batch4$batch.id)
+setwd("~/Documents/ICU_Frequent_Flyers-addedfiles/data/notes/dis")
+fileID <- list.files(); fileID
+Notesreader <- function(file_ids){
+  files <- list.files()[file_ids]
+  allfiles <- NULL
+  for (i in 1:length(files)){
+    file_i <- read.csv(files[i], sep = ",")
+    colnames(file_i) <- c("subject_id", "hadm_id_MIII", "hadm_id_MIII","hadm_id_MIII", "chartdate", "category","descriptions", "text", "cohort", "randomizer")
+    allfiles <- unique(rbind(allfiles, file_i))
+  }
+  return(allfiles)
+}
+#Problem files 3, 7, 8, 11, 15
+miss4part1 <- Notesreader(c(2, 6, 10, 14))
+miss4part2 <- Notesreader(c(7,15))
+dis <- rbind(miss4part1, miss4part2)
+miss4 <- dis[dis$hadm_id_MIII %in% Miss4_id, ]
+
+#Write file to data_flyer folder
+setwd("~/Documents/frequent flyer/data_flyers")
+write.csv(miss4, file = "MSDis05OCT16.csv", row.names = F)
+# Will send this file to Patrick and David
+
+# Patrick and David also want me to subset "jjDis16Mar16.csv"
+batch3 <- read.csv("jjDis16Mar16.csv")
+nrow(batch3)
+batch3_part1 <- batch3[1:25,]
+batch3_part2 <- batch3[26:50,]
+batch3_part3 <- batch3[51:75,]
+batch3_part4 <- batch3[76:100,]
+write.csv(batch3_part1, file = "jjDis16Mar16_part1.csv", row.names = F)
+write.csv(batch3_part2, file = "jjDis16Mar16_part2.csv", row.names = F)
+write.csv(batch3_part3, file = "jjDis16Mar16_part3.csv", row.names = F)
+write.csv(batch3_part4, file = "jjDis16Mar16_part4.csv", row.names = F)
+```
+
+#Calculating the proportion of each feature that "agree" 
+
+```{r}
+#For now, we will ignore who annotated the notes (different or the same annotators in case of duplicates) and
+#Define "agree" as True if all the annotations for a feature of a particular note, identified by its unique ICU.ID, are the same
+#i.e. - complete agreement between all the annotated versions of a note for a feature = Agree
+#We also need to exlude notes that have only been annotated once
+
+#First, we create a function to compare the annotations of a feature 
+compare_feature <- function(x, data){ #Need to use quotes when calling x.
+  feature <- data[, c(x, "ICU.ID")] 
+  #, "Note.ID", "Hospital.Admission.ID", "Subject.ID", "Chart.time", "cohort", "text", "Unsure", "operator")]
+  feature$X <- feature[, x] #because can't use quotes with summarise
+  by_icuid <- group_by(feature, ICU.ID)
+  agreement <- summarise(by_icuid,
+    local(num_notes <- n()),
+    local(ref <- mean(X)), #column3: agree entails all 1's or all 0's
+    local(pos_note <- sum(X)) 
+        #column4: no. positive notes per ICU.ID for a feature
+    )
+  agreement <- agreement[agreement[,2] >=2,] #excl. notes annotated once
+  agreement$agree <- (agreement[,3]==0 | agreement[,3]==1) 
+  #return(agreement$agree) 
+  return(agreement)
+  #returns a T (agree) or F (disagree) vector for a feature
+}
+
+#Test function:
+#Create test data frame:
+test <- data.frame(ICU.ID = c(1,1,1,2,2,3,3,4), feature = c(1,0,1,0,0,1,0,1))
+#Output of function as expected:
+compare_feature("feature", test)
+#Summary statistics of agreement:
+summary(as.vector(compare_feature("feature", test)$agree))
+summary(as.vector(compare_feature("feature", test)$agree)*1)
+#Comment: function seems to work as it's supposed to
+
+#Reload real dcsum:
+dcsum <- read.csv("dischargeSummariesClean.csv")
+#Create column names:
+allfeatures <- c("None", "Obesity", "Non.Adherence", "Developmental.Delay.Retardation", "Advanced.Heart.Disease", "Advanced.Lung.Disease", "Schizophrenia.and.other.Psychiatric.Disorders", "Alcohol.Abuse", "Other.Substance.Abuse", "Chronic.Pain.Fibromyalgia", "Chronic.Neurological.Dystrophies", "Advanced.Cancer", "Depression", "Dementia", "Unsure")
+
+#Then, we create a matrix of columns of T's and F's for all the features
+AgreeMatrix <- NULL
+for (i in 1:length(allfeatures)){
+  logi <- as.vector(compare_feature(allfeatures[i], dcsum)$agree)
+  #logi <- as.numeric(logi)
+  AgreeMatrix <- cbind(AgreeMatrix, logi)
+}
+colnames(AgreeMatrix) <- allfeatures
+
+#Results:
+#Number of unique notes left after excluding notes that were only annotated once:
+nrow(AgreeMatrix)
+#Summary: tally of T's and F's for each feature:
+summary(AgreeMatrix)
+#Proportions of T's (Agree) and F's (Disagree):
+Agreeprop <- 1*AgreeMatrix
+apply(Agreeprop, 2, mean, na.rm = T)
+```
+
+#Comment:
+The level of agreement is surprisingly high even after excluding notes that were annotated once...maybe I did something wrong?
+
+This is the agreement before excluding notes that were only annotated once (which is slightly higher):
+                                          None 
+                                     0.7909535
+                                    
+                                       Obesity 
+                                     0.9779951 
+                                    
+                                 Non.Adherence 
+                                     0.9437653 
+                                    
+               Developmental.Delay.Retardation 
+                                     0.9951100 
+                                    
+                        Advanced.Heart.Disease 
+                                     0.8826406 
+                                    
+                         Advanced.Lung.Disease 
+                                     0.9266504  
+                                    
+ Schizophrenia.and.other.Psychiatric.Disorders  
+                                     0.9572127 
+                                    
+                                 Alcohol.Abuse 
+                                     0.9572127 
+                                    
+                         Other.Substance.Abuse 
+                                     0.9731051 
+                                    
+                     Chronic.Pain.Fibromyalgia 
+                                     0.9254279 
+                                    
+              Chronic.Neurological.Dystrophies 
+                                     0.8545232 
+                                    
+                               Advanced.Cancer 
+                                     0.9633252 
+                                    
+                                    Depression 
+                                     0.9168704 
+                                    
+                                      Dementia 
+                                     0.9865526 
+                                    
+                                        Unsure 
+                                     0.8312958 
+                                     
+                                     
+#Agreement amongst positive notes
+```{r}
+#Identify notes with any positives - feature by feature:
+identify_posnote <- function(x, data){
+  y <- compare_feature(x, data)
+  posnote <- y[y[, 4] >=1, ]
+  #column4: number of positive notes per ICU.ID for a feature
+  return(posnote)
+}
+posnote_num <- NULL
+for(i in 1:length(allfeatures)){
+  w <- nrow(identify_posnote(allfeatures[i], dcsum))
+  posnote_num <- append(posnote_num, w)
+}
+#Proportion of agreement for each feature amongst notes with any positive features:
+pos_agree_prop <- NULL
+for(i in 1:length(allfeatures)){
+  y <- mean(1*(identify_posnote(allfeatures[i], dcsum)$agree))
+  pos_agree_prop <- append(pos_agree_prop, y)
+}
+
+
+#Doing the reverse for notes with all negatives (no positives) for a feature:
+#Identify notes with NO positives - feature by feature:
+identify_negnote <- function(x, data){
+  y <- compare_feature(x, data)
+  negnote <- y[y[, 4] < 1, ]
+  #column4: number of positive notes per ICU.ID for a feature
+  return(negnote)
+}
+negnote_num <- NULL
+for(i in 1:length(allfeatures)){
+  w <- nrow(identify_negnote(allfeatures[i], dcsum))
+  negnote_num <- append(negnote_num, w)
+}
+#Proportion of agreement for each feature amongst notes with NO positive features, i.e. all negatives:
+neg_agree_prop <- NULL
+for(i in 1:length(allfeatures)){
+  y <- mean(1*(identify_negnote(allfeatures[i], dcsum)$agree))
+  neg_agree_prop <- append(neg_agree_prop, y)
+}
+#expect to be all ones by definition
+
+#Dataframe for proportion of agreement amongst unique notes with any positive features:
+posframe <- data.frame(concept = allfeatures, num_posnotes = posnote_num, prop_agreed = pos_agree_prop, prop_posnote = posnote_num/(posnote_num+negnote_num), num_negnotes = negnote_num, sum_posneg = posnote_num+negnote_num); posframe
+
+write.table(posframe, file = "posnote_agreement.csv", row.names = F, sep = ",")
+
+```                                    
+
+#Doing the same with the latest discharge final file with the missing notes added
+```{r}
+#Load final discharge file
+dcfinal <- read.csv("AllDischargeFinal24Oct16.csv")
+
+#Then, we create a matrix of columns of T's and F's for all the features
+agreematrix <- NULL
+for (i in 1:length(allfeatures)){
+  logi <- as.vector(compare_feature(allfeatures[i], dcfinal)$agree)
+  #logi <- as.numeric(logi)
+  agreematrix <- cbind(agreematrix, logi)
+}
+colnames(agreematrix) <- allfeatures
+
+#Results:
+#Number of unique notes left after excluding notes that were only annotated once:
+nrow(agreematrix)
+#Summary: tally of T's and F's for each feature:
+summary(agreematrix)
+#Proportions of T's (Agree) and F's (Disagree):
+agreeprop <- 1*agreematrix
+apply(agreeprop, 2, mean, na.rm = T)
+
+#Identify notes with any positives - feature by feature:
+identify_posnote <- function(x, data){
+  y <- compare_feature(x, data)
+  posnote <- y[y[, 4] >=1, ]
+  #column4: number of positive notes per ICU.ID for a feature
+  return(posnote)
+}
+posnote_Num <- NULL
+for(i in 1:length(allfeatures)){
+  w <- nrow(identify_posnote(allfeatures[i], dcfinal))
+  posnote_Num <- append(posnote_Num, w)
+}
+#Proportion of agreement for each feature amongst notes with any positive features:
+Pos_agree_prop <- NULL
+for(i in 1:length(allfeatures)){
+  y <- mean(1*(identify_posnote(allfeatures[i], dcfinal)$agree))
+  Pos_agree_prop <- append(Pos_agree_prop, y)
+}
+
+
+#Doing the reverse for notes with all negatives (no positives) for a feature:
+#Identify notes with NO positives - feature by feature:
+identify_negnote <- function(x, data){
+  y <- compare_feature(x, data)
+  negnote <- y[y[, 4] < 1, ]
+  #column4: number of positive notes per ICU.ID for a feature
+  return(negnote)
+}
+negnote_Num <- NULL
+for(i in 1:length(allfeatures)){
+  w <- nrow(identify_negnote(allfeatures[i], dcfinal))
+  negnote_Num <- append(negnote_Num, w)
+}
+#Proportion of agreement for each feature amongst notes with NO positive features, i.e. all negatives:
+Neg_agree_prop <- NULL
+for(i in 1:length(allfeatures)){
+  y <- mean(1*(identify_negnote(allfeatures[i], dcfinal)$agree))
+  Neg_agree_prop <- append(Neg_agree_prop, y)
+}
+#expect to be all ones by definition
+
+#Dataframe for proportion of agreement amongst unique notes with any positive features:
+Posframefinal <- data.frame(concept = allfeatures, num_posnotes = posnote_Num, prop_agreed = Pos_agree_prop, prop_posnote = posnote_Num/(posnote_Num+negnote_Num), num_negnotes = negnote_Num, sum_posneg = posnote_Num+negnote_Num); Posframefinal
+
+write.table(Posframefinal, file = "posnote_agreementfinal.csv", row.names = F, sep = ",")
+
+```
+
+#Sorting and subsetting out unsures (changed to dcfinal)
+
+```{r}
+#I want to order the notes by ICU.ID then by operator before looking at the unsures and the inter & intra operator disagreements
+
+#Create a Note ID column for the whole dataset
+#So I don't lose any rows/notes even if the same operator annotated the same notes the same way
+dcfinal$Note.ID <- NULL
+for(i in 1:nrow(dcfinal)){
+  dcfinal$Note.ID[i] <- as.numeric(rownames(dcfinal[i,]))
+}
+
+#Order by ICU.ID and then by operator 
+dcfinal <- dcfinal[with(dcfinal, order(ICU.ID, operator)), ]
+head(dcfinal[,c("ICU.ID", "operator", "Note.ID")])
+
+#Subsetting out any note with "Unsure" == 1:
+unsure <- dcfinal[dcfinal$Unsure == 1, ]
+#Number of Unsure notes = 241
+nrow(unsure)
+#Number of unique notes ticked for Unsure = 203
+unsureID <- unique(unsure$ICU.ID)
+length(unsureID)
+#Unsure by annotator
+summary(unsure$operator)
+#Export all unique ICU.ID for notes ticked as Unsure
+write.csv(unsure, file = "unsuredcfinal.csv")
+
+
+#Ned had actually sent Patrick a batch of Unsure discharge notes to adjudicate earlier:
+patsure <- read.csv("PATunsureDis16Feb16Results.csv", sep = ",")
+#This is only 100 of the unsure notes
+str(patsure)
+PTunsureID <- unique(patsure$ICU.ID)
+#But only 86 unique ICU.ID's...ie there were duplicates
+#Or according to Yeran, there are different note texts that share the same ICU.ID
+length(unique(PTunsureID))
+length(unique(patsure$Hospital.Admission.ID))
+length(unique(patsure$Chart.time))
+length(unique(patsure$Subject.ID))
+#There's also some intra-operator variation
+nrow(unique(patsure)) > length(unique(PTunsureID))
+
+
+#ICU.ID of notes already adjudicated by Patrick:
+adju <- PTunsureID %in% unsureID
+PTinTotal <- sum(1*adju); PTinTotal
+adju2 <- unsureID %in% PTunsureID
+TotalinPT <- sum(1*adju2); TotalinPT
+#Comment: Patrick adjudicated 64 out of the 290 unique notes in unsureID. Not sure where Ned got the other 86-64=22 notes from.
+
+#ICU.ID of the 22 notes adjudicated by Patrick but not in our unsureID subset:
+adju3 <- !(PTunsureID %in% unsureID)
+adju3ID <- PTunsureID[adju3]; length(adju3ID)
+
+#ICU.ID of unsure notes that still need adjudicating:
+unadju <- !(unsureID %in% PTunsureID)
+adjuID <- unsureID[unadju]; length(adjuID)
+
+#Load all discharge notes compiled by Ned (though I suspect this set might be missing some that Ned has sent out)
+#allDis <- read.csv("allDisFinal.csv") #doesn't have ICU.ID :(
+#RemainUnsureDis <- allDis[allDis$ICU.ID %in% adjuID,] 
+#allDis doesn't have ICU.ID so doesn't work! :(
+#only has hadm_id
+#let's use dcfinal instead
+
+#Probably have to make colnames consistent for Ned's python program will still work
+#Column names for a sample file from Ned:
+unsuredis16feb16 <- read.csv("unsureDis16Feb16.csv")
+colnames(unsuredis16feb16)
+
+#Don't have chartdate and descriptions columns in dcfinal
+#Will replace with chartdate with "Real.time" in dcfinal 
+#Will create a vector of descriptions ("Summary")
+RemainUnsureDis <- unique(dcfinal[dcfinal$ICU.ID %in% adjuID, c("subject.id", "Hospital.Admission.ID", "Real.time", "text")])
+RemainUnsureDis$category <- rep("Discharge", nrow(RemainUnsureDis))
+RemainUnsureDis$descriptions <- rep("Summary", nrow(RemainUnsureDis))
+
+#Rename columns
+colnames(RemainUnsureDis) <- c("subject_id", "hadm_id_MIII", "chartdate", "text", "category", "descriptions")
+#We somehow need 2 more hadm_id columns
+RemainUnsureDis$hadm_id_MIII <- RemainUnsureDis$hadm_id_MIII
+RemainUnsureDis$hadm_id_MIII <- RemainUnsureDis$hadm_id_MIII
+#Re-arrange the columns
+RemainUnsureDis <- RemainUnsureDis[, c("subject_id", "hadm_id_MIII", "hadm_id_MIII", "hadm_id_MIII", "chartdate", "category", "descriptions", "text")]
+
+#Need to split the remaining unsures into smaller batches for annotating:
+#Saving it to unsure note folder
+
+#setwd("~/Documents/ICU_Frequent_Flyers-addedfiles/data/notes/unsure_dis")
+#write.csv(RemainUnsureDis[1:30,], file = "unsureDis25Oct16_30.csv", row.names = F)
+#write.csv(RemainUnsureDis[31:60,], file = "unsureDis25Oct16_60.csv", row.names = F)
+#write.csv(RemainUnsureDis[61:90,], file = "unsureDis25Oct16_90.csv", row.names = F)
+#write.csv(RemainUnsureDis[91:120,], file = "unsureDis25Oct16_120.csv", row.names = F)
+#write.csv(RemainUnsureDis[121:150,], file = "unsureDis25Oct16_150.csv", row.names = F)
+#write.csv(RemainUnsureDis[151:180,], file = "unsureDis25Oct16_180.csv", row.names = F)
+#write.csv(RemainUnsureDis[181:210,], file = "unsureDis25Oct16_210.csv", row.names = F)
+#write.csv(RemainUnsureDis[211:240,], file = "unsureDis25Oct16_240.csv", row.names = F)
+#write.csv(RemainUnsureDis[241:270,], file = "unsureDis25Oct16_270.csv", row.names = F)
+#write.csv(RemainUnsureDis[271:311,], file = "unsureDis25Oct16_311.csv", row.names = F)
+```
+
+#let's tease out notes that disagree:
+
+```{r}
+#First create a matrix of all disagree's, along with ICU.ID identifier
+DisagreeMatrix <- compare_feature("None", dcfinal)$ICU.ID
+for (i in 1:length(allfeatures)){
+  logi <- -1*(compare_feature(allfeatures[i], dcfinal)$agree)+1
+  DisagreeMatrix <- cbind(DisagreeMatrix, logi)
+}
+id_col <- "ICU.ID"
+colnames(DisagreeMatrix) <- append(id_col, allfeatures)
+#Tease out the ICU.ID of each unique note with any disagreement
+#By creating a sum_disagree column for each row
+sum_disagree <- rowSums(DisagreeMatrix[, 2:16])
+DisagreeMatrix <- cbind(DisagreeMatrix, sum_disagree)
+nrow(DisagreeMatrix)
+#Keep only notes with disagreement
+DisagreeOnly <- DisagreeMatrix[DisagreeMatrix[, 17] >0,]
+nrow(DisagreeOnly)
+
+#ICU.ID of notes with any disagreement
+disagreeID <- unique(DisagreeOnly[,1]); length(disagreeID)
+#Number of unique ICU.ID in dcfinal
+length(unique(dcfinal$ICU.ID))
+#Percentage of notes that disagree is 62.89%!
+paste(round(length(disagreeID)/length(unique(dcfinal$ICU.ID))*100,2), "%")
+
+```
+
+#Still Need to Look at Nursing Notes:
+
