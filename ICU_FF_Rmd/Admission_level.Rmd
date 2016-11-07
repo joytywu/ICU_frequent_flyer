@@ -1,0 +1,688 @@
+---
+title: "Admission Level Analysis"
+author: "Joy Wu"
+date: "12 June 2015"
+output: pdf_document
+---
+
+```{r}
+setwd("~/Desktop/Frequency_flyer")
+library(dplyr)
+library(gridBase, gridExtra)
+library(lattice)
+library(survival)
+library(icd9)
+library(xtable)
+library(Hmisc)
+```
+
+This Rmd aims to clean and analyse the following at admission level:
+  # All the ICD9 diagnoses for that admission
+	# DRG 
+	Severity of illness - SOFA
+	Day of week of admission
+	Month and year of admission
+	Service of admission
+	MICU/FICU versus SICU versus CCU versus CSRU
+	Admission location – ER, direct, urgent, SDA
+  # Procedures as captured in the Procedure Events table
+	# Duration of mechanical ventilation
+	# Duration of vasopressor therapy
+	# Renal replacement therapy (Y/N)
+	# Presence/absence tracheostomy
+	# LOS ICU
+	# Hospital LOS
+	Sepsis (Y/N)
+	Code status (DNR, CMO) including changes
+	Disposition as stated in the discharge summary
+  
+-----
+
+Overall aim of project:
+Analysis:
+1)  Describe epidemiology of ICU frequent fliers, defined as patients admitted to ICU 3 or more times in 365 day period
+2)  Describe risk of in-hospital death, death at 30 days and death at 1 year of this population
+3)	Describe risk of future admissions to ICU over time
+4)	Describe whether ICU frequent fliers have changed over time. 
+
+-----
+
+Stuff to analyse still at admission level analysis:
+Can be adapted from previous codes:
+  Severity of illness - SOFA
+  MICU/FICU versus SICU versus CCU versus CSRU
+	Admission location – ER, direct, urgent, SDA
+Need to do these from scratch:  
+  Day of week of admission
+	Month and year of admission
+	Service of admission
+  Sepsis (Y/N)
+	Code status (DNR, CMO) including changes
+	Disposition as stated in the discharge summary
+
+-----
+
+Importing general ICU_details data csv, also exploring whether to use hadm_ids or icustay_ids for the hospital admission level analysis:
+```{r}
+setwd("~/Desktop/Frequency_flyer")
+
+col_vec <- c("INDEX", "ICUSTAY_ID", "SUBJECT_ID", "GENDER", "DOB", "DOD", "EXPIRE_FLG", "SUBJECT_ICUSTAY_TOTAL_NUM", "SUBJECT_ICUSTAY_SEQ", "HADM_ID", "HOSPITAL_TOTAL_NUM", "HOSPITAL_SEQ", "HOSPITAL_FIRST_FLG", "HOSPITAL_LAST_FLG", "HOSPITAL_ADMIT_DT", "HOSPITAL_DISCH_DT", "HOSPITAL_LOS", "HOSPITAL_EXPIRE_FLG", "ICUSTAY_TOTAL_NUM", "ICUSTAY_SEQ", "ICUSTAY_FIRST_FLG", "ICUSTAY_LAST_FLG", "ICUSTAY_INTIME", "ICUSTAY_OUTTIME", "ICUSTAY_ADMIT_AGE", "ICUSTAY_AGE_GROUP", "ICUSTAY_LOS", "ICUSTAY_EXPIRE_FLG", "ICUSTAY_FIRST_CAREUNIT", "ICUSTAY_LAST_CAREUNIT", "ICUSTAY_FIRST_SERVICE", "ICUSTAY_LAST_SERVICE", "HEIGHT", "WEIGHT_FIRST", "WEIGHT_MIN", "WEIGHT_MAX", "SAPSI_FIRST", "SAPSI_MIN", "SAPSI_MAX", "SOFA_FIRST", "SOFA_MIN", "SOFA_MAX", "MATCHED_WAVEFORMS_NUM" ) #neonates table would have the same column headers
+First_hadm <- read.csv("First_hadm.csv", header = FALSE)
+Second_hadm <- read.csv("Second_hadm.csv", header = FALSE)
+Third_hadm <- read.csv("Third_hadm.csv", header = FALSE)
+fourPlus_hadm <- read.csv("fourPlus_hadm.csv", header = FALSE)
+##I had to change the file name for 4orMore_hadm.csv to fourPlus_hadm.csv. For some reason read.csv() doesn't read files with numbers in it!
+
+com.dat <- as.data.frame(rbind(First_hadm, Second_hadm, Third_hadm, fourPlus_hadm))
+colnames(com.dat) <- col_vec
+
+#Structure of com.dat. It has 1946 rows of icustay admissions
+str(com.dat)
+
+#Checking subject_ids for completeness in com.dat
+comdat_subid <- unique(com.dat$SUBJECT_ID)
+length(comdat_subid) #421 subject_ids
+summary(is.na(com.dat$SUBJECT_ID)) #No NA's
+
+#Checking hadm_ids for completeness in com.dat
+comdat_hadmid <- unique(com.dat$HADM_ID)
+length(comdat_hadmid) #1792 hadm_ids
+summary(is.na(com.dat$HADM_ID)) #No NA's
+
+#But I know that some hadm_ids are missing in the icustay_detail table in MIMIC as evident in a later csv that I pulled:
+icu_detail <- read.csv("icudetail_ids.csv", sep = ",")
+str(icu_detail)
+#icu_detail table was pulled with less restrictions and should have more complete data. It has 2136 rows of icustay admissions, 190 more icustay admissions than in com.dat, which only has 1946 rows. The 190 rows are omitted when com.dat csvs are pulled due to missing hadm_ids
+#As can be shown by checking the missing hadm_ids in icu_detail
+summary(is.na(icu_detail$hadm_id))
+##This is a logical test and it means there are 190 rows NA (ie. missing) hadm_id values. It means there are 190 icustay admissions (rows in icu_detail) that do not have an associated hadm_id assigned, though some of them would be from the same hospital_admissions. 
+#These 190 rows are the rows that are omitted when com.dat was pulled as it only included rows without missing hadm_ids
+nrow(icu_detail) - nrow(com.dat)
+#Some out of the 190 rows are separate hospital admissions, some are repeated icu admissions under the same hospital admission. The difference will be hard to tell.
+
+#Check the number of unique subject_id and hadm_id in icu_detail
+length(unique(icu_detail$subject_id)) #421, full cohort
+length(unique(icu_detail$hadm_id)) #1793, one more than in com.dat. The extra hadm_id in icu_detail should just be the missing value, NA, so it actually has the same number of unique hadm_ids
+x <- unique(icu_detail$hadm_id) %in% unique(com.dat$HADM_ID)
+y <- unique(icu_detail$hadm_id)[!x]
+y
+#So yes, essentially com.dat and icu_detail have the same set of unique hadm_ids, but that icu_detail also have the rows/admissions where hadm_ids are missing in the originating mimic2v26.icustay_detail table.
+#When I pulled the com.dat csvs, I must have somehow limited the rows to rows without missing hadm_ids...
+
+#Some of the rows with missing hadm_ids are themselves separate hospital admissions and should be counted. The first icustay admit of each new hospital admission should have icustay_seq == 1. So we can see how many separate hospital admissions we miss out if we just use the list of unique hadm_ids available in com.dat or icu_detail dataset.
+x <- icu_detail[icu_detail$icustay_seq == 1, "hadm_id"]
+summary(is.na(x))
+#This means we miss out on (at least) 82 separate hospital admissions with our list of unique hadm_ids from com.dat or icu_detail. 
+
+#We could do the admission level analysis with icustay_id, which is complete. 0 TRUE under is.na() test.
+summary(is.na(icu_detail$icustay_id))
+summary(is.na(icu_detail$icustay_seq))
+#Question: would it be better to use icustay_ids for icustay_seq == 1 to do the admission level analysis, and to use the icu_detail table instead of com.dat since icu_detail has more complete rows.
+
+#Option one: 
+#The follwing vector of icustay_id could be used for hospital admission level analysis. It would be analysing the first icu admission of each new hospital admission
+analysis_id1 <- unique(icu_detail[icu_detail$icustay_seq == 1, "icustay_id"])
+length(analysis_id1)
+#This means there should be 1874 separate hospital admissions for analysis
+#Although, looking manually in the icu_detail csv using excel, I found that there are several icustay admissions that should probably be labeled as a separate hospital admission with icustay_seq == 1 but are not. The common theme for them is the hadm_id and the hospital admit and discharge dates are missing. The icustay admit and discharge date and times are all complete. And for some of these admissions that I think are labeled incorrectly, there could be months or years between the icustay admit and discharge dates but they are still labled under the same hospital admission, which is almost clearly not right. So I suspect that the 82 missing hadm_id is still an underestimate but I am not sure how to correct this.
+
+#Option Two:
+#We could just ignore all the rows with missing hadm_ids and just do the admission level analysis but the available hadm_ids in icu_detail table
+analysis_id2 <- na.omit(unique(icu_detail$hadm_id))
+length(analysis_id2)
+#We would have 1792 icu admissions (under separate hospital admission) to analyse with this option
+
+#Option Three:
+#I went back and pulled the subject_id and hadm_id from mimic2v26.admissions table, which turns out to have more hadm_id data
+hadmID <- read.csv("Admissions_ids.csv", sep = ",")
+#There are no missing values in hadmID from the admissions table
+summary(is.na(hadmID))
+#We could also verify that all subject has had at least 3 separate hospital admissions (unique hadm_ids)
+tally <- hadmID %>% count(subject_id) 
+min(tally$n)
+#So if we can match the hadm_ids back to the icu_detail table somehow, we would have more complete information
+#But I'm not sure how to do this
+#One possibility is the use the admit_dt and disch_dt range as a selection criteria for what icustay_intime and icustay_outtime would fit within that time frame. But this seems hard...
+
+#Conclusion:
+#For most admission level analysis required, icustay_id is available and can be used to link up between the various MIMIC tables. 
+#However, ICD9 table only has hadm_id and subject_id to identify the rows, so would not be suitable to use icustay_id to analyse it.
+#Maybe we should just ignore the admissions with missing hadm_ids...what a round about way to say let's not change anything we've done apart from keeping track of missing number of admissions.
+```
+
+ICD9 summary table:
+```{r, results = 'asis'}
+#The data is pulled from the ICD9 table in MIMIC using our cohort of 421 unique subject_ids
+#I pulled 2 csvs.  
+
+#One I had already calculated the frequency of each ICD9 diagnosis (aggregated per hospital admission and counted over all unique hadm_ids) and sorted by frequency in sql:
+icd9_freq <- read.csv("ICD9_frequency.csv", sep = ";")
+head(icd9_freq, 20)
+# However, this is not helpful enough as the ICD9 codes are too granular and we need to lump them into broader disease categories instead. Also the code description is messy. We will deal with this later using the icd9_tab table which has not been processed yet.
+
+# The second csv is pulled straight out from MIMIC after selecting the rows by our unique list of subject_ids. The icd9 code, associated hadm_id, icd9 description, and sequence of icd9 code priority for the hospital/hadm admission are pulled too in the same table.
+icd9_tab <- read.csv("ICD9_table.csv", sep = ";")
+head(icd9_tab)
+
+#Knowing there are lots of missing hadm_id in the MIMIC database in general, we need to keep track of how many are missing in the icd9_table.
+# Checking for missing subject_ids: 421, none missing
+length(unique(icd9_tab$subject_id)) 
+# Checking for missing hadm_ids compared with hadm_ids in com.dat (same as that for icu_detail, minus the NA):
+length(unique(com.dat$HADM_ID)) #1792 hadm_ids
+length(unique(icd9_tab$hadm_id)) #1783, 9 missing
+#Hadm_ids that are in com.dat but not in icd9_tab
+hadm.check1 <- unique(com.dat$HADM_ID) %in% unique(icd9_tab$hadm_id)
+hadm.missing1 <- unique(com.dat$HADM_ID)[!hadm.check1]
+hadm.missing1 #21
+#Hadm_ids that are in icd9_tab but not in com.dat
+hadm.check2 <-  unique(icd9_tab$hadm_id) %in% unique(com.dat$HADM_ID)
+hadm.missing2 <-  unique(icd9_tab$hadm_id)[!hadm.check2]
+hadm.missing2 #12
+#So that's quite interesting. We know some hadm_ids are missing in com.dat and icu_detail. icd9_tab is missing 21 hadm_id that are in com.dat but com.dat is also missing some hadm_ids, 12, that are in icd9_tab. 
+#Either way, there should be at least 1874 separate hospital admissions, hadm_ids, from knowing length(analysis_id)
+#The difference is:
+length(analysis_id1) - length(unique(icd9_tab$hadm_id))
+#This means the icd9_tab is missing at least 91 separate hospital admissions' information
+
+#We will also keep track of all the sometimes missing hadm_ids
+hadm.missing <- unique(c(hadm.missing1, hadm.missing2))
+hadm.missing #33
+
+
+#After tracking the missing hadm_ids, we will now analyse what information that we have in icd9_tab
+#Checking to see if there are any further missing values in icd9_tab
+str(icd9_tab)
+#No NA's under each variable, so good
+
+#We will be doing admission level analysis with hadm_ids
+#Lets say we are only interested in the primary, secondary and tertiary diagnoses of the admission, sequence < 4
+#Also that we want to clean/standardize the description column later by just using the icd9 code to reassign description, so we'll get rid of the description column for now
+icd9 <- icd9_tab[icd9_tab$sequence < 4, 1:4 ]
+#nrow(icd9)
+
+#Simplify icd9 codes (get rid of the decimals which just makes icd9 more granular)
+icd9$code <- gsub("([^.]*).*", "\\1", icd9$code)
+head(icd9)
+
+#Recreate an icd9 description column using R ICD9 package
+icd9$description <- NULL
+for (i in 1:nrow(icd9)){
+  icd9$description[i] <- icd9Explain(icd9$code[i])
+}
+head(icd9)
+nrow(icd9)
+
+#Tally the frequency of different icd9 codes as primary, secondary and tertiary diagnoses
+pri<- icd9[icd9$sequence == 1,] %>% count(description)
+seco <- icd9[icd9$sequence == 2,] %>% count(description)
+tert <- icd9[icd9$sequence == 3,] %>% count(description)
+icd9_tally <- merge(pri, seco, by = "description")
+icd9_tally <- merge(icd9_tally, tert, by = "description")
+colnames(icd9_tally) <- c("ICD9_Description", "Primary_Dx", "Secondary_Dx", "Tertiary_Dx")
+icd9_tally <- arrange(icd9_tally, desc(Primary_Dx))
+
+#Print first 20 rows of icd9_tally by diagnoses priorities
+print(xtable(head(icd9_tally, 20), caption = "Admission Level Analysis: ICD9 Frequency"))
+
+```
+
+Some further ICD9 analysis, taking into account the hospital_seq
+```{r, results = 'asis'}
+#So far the above analysis only breaks the ICD9 frequencies down by priority of ICD9 diagnoses for each unique hospital admission
+#We want to see if there are any patterns when we break it down by order of hospital admission for each patient as well
+
+#To do this we will merge icd9 with icustay_details, the com.dat table, by subject_id and hadm_id to get the hospital sequence information.
+#Since we can only merge with hadm_id in icd9, I'm not going to change my codes and will keep using com.dat instead of icu_detail because the list of hadm_ids are the same in both
+hosp_seq <- com.dat[, c("SUBJECT_ID", "HADM_ID", "HOSPITAL_SEQ", "ICUSTAY_SEQ")]
+nrow(hosp_seq)
+
+# We only use the info from the first icustay of each hospital admission to avoid multiple icu admits under the same hospital admission
+hosp_seq <- hosp_seq[hosp_seq$ICUSTAY_SEQ == 1, ]
+nrow(hosp_seq)
+
+# And let's say we are only interested in the first 3 hospital admissions
+#hosp_seq <- hosp_seq[hosp_seq$HOSPITAL_SEQ < 4, ]
+#nrow(hosp_seq) #1792 rows (separate hospital admissions)
+
+# The column names of icd9 is in small cases so we need to make the cases the same before we can merge the tables
+colnames(icd9) <- c("SUBJECT_ID", "HADM_ID", "SEQUENCE", "CODE", "DESCRIPTION")
+
+# Merge by subject_id and hadm_id 
+icd9 <- merge(icd9, hosp_seq, by = c("SUBJECT_ID", "HADM_ID"))
+nrow(icd9)
+#However, by doing this, we will lose a few more admissions, as some of the hadm_ids are mutually exclusive between icd9_tab and com.dat
+#Because the MIMIC ICD9 table does not have icustay_id information, we could only use hadm_ids to merge even though it has problems with missing values
+
+#So now we need to check how many hadm_ids we lost after merging:
+length(unique(icd9$HADM_ID)) 
+#1771 unique hadm_ids left after merging. The original com.dat has 1792 hadm_ids and icd9_tab has 1783 hadm_ids
+#Number of unique subject_ids are preserved
+length(unique(icd9$SUBJECT_ID))
+#Overall, the number of hadm_ids now missing from expected is: 103
+length(analysis_id1) - length(unique(icd9$HADM_ID))
+
+# Now back to analysis:
+# Reshaping data
+icd9 <- arrange(icd9, SUBJECT_ID, HOSPITAL_SEQ)
+icd9$DESCRIPTION <- as.factor(icd9$DESCRIPTION)
+icd9$CODE <- as.factor(icd9$CODE)
+nrow(icd9) #5301 rows
+
+# Split icd9 into primary, secondary and tertiary diagnoses
+icd9_prim <- icd9[icd9$SEQUENCE == 1, ]
+icd9_sec <- icd9[icd9$SEQUENCE == 2, ]
+icd9_ter <- icd9[icd9$SEQUENCE == 3, ]
+nrow(icd9_prim) + nrow(icd9_sec) + nrow(icd9_ter) #5301 rows
+
+#Overall summary of icd9 by priority of diagnoses
+summary(icd9_prim)
+summary(icd9_sec)
+summary(icd9_ter)
+prim <- sort(table(icd9_prim$DESCRIPTION), decreasing = TRUE)
+sec <- sort(table(icd9_sec$DESCRIPTION), decreasing = TRUE)
+ter <- sort(table(icd9_ter$DESCRIPTION), decreasing = TRUE)
+
+# Stats of most common diagnoses by hospital admission sequence
+# First admission, HOSPITAL_SEQ == 1
+icd9_prim1 <- icd9_prim[icd9_prim$HOSPITAL_SEQ == 1, ]
+icd9_sec1 <- icd9_sec[icd9_sec$HOSPITAL_SEQ == 1, ]
+icd9_ter1 <- icd9_ter[icd9_ter$HOSPITAL_SEQ == 1, ]
+summary(icd9_prim1)
+summary(icd9_sec1)
+summary(icd9_ter1)
+prim1 <- sort(table(icd9_prim1$DESCRIPTION), decreasing = TRUE)
+sec1 <- sort(table(icd9_sec1$DESCRIPTION), decreasing = TRUE)
+ter1 <- sort(table(icd9_ter1$DESCRIPTION), decreasing = TRUE)
+
+# Second admission, HOSPITAL_SEQ == 2
+icd9_prim2 <- icd9_prim[icd9_prim$HOSPITAL_SEQ == 2, ]
+icd9_sec2 <- icd9_sec[icd9_sec$HOSPITAL_SEQ == 2, ]
+icd9_ter2 <- icd9_ter[icd9_ter$HOSPITAL_SEQ == 2, ]
+summary(icd9_prim2)
+summary(icd9_sec2)
+summary(icd9_ter2)
+prim2 <- sort(table(icd9_prim2$DESCRIPTION), decreasing = TRUE)
+sec2 <- sort(table(icd9_sec2$DESCRIPTION), decreasing = TRUE)
+ter2 <- sort(table(icd9_ter2$DESCRIPTION), decreasing = TRUE)
+
+
+# Third admission, HOSPITAL_SEQ == 3
+icd9_prim3 <- icd9_prim[icd9_prim$HOSPITAL_SEQ == 3, ]
+icd9_sec3 <- icd9_sec[icd9_sec$HOSPITAL_SEQ == 3, ]
+icd9_ter3 <- icd9_ter[icd9_ter$HOSPITAL_SEQ == 3, ]
+summary(icd9_prim3)
+summary(icd9_sec3)
+summary(icd9_ter3)
+prim3 <- sort(table(icd9_prim3$DESCRIPTION), decreasing = TRUE)
+sec3 <- sort(table(icd9_sec3$DESCRIPTION), decreasing = TRUE)
+ter3 <- sort(table(icd9_ter3$DESCRIPTION), decreasing = TRUE)
+
+## Summary table of sorted icd9 frequencies by admission
+# Need to change prim, etc, from 1 dimension arrays back to data frames with two columns, one for diagnosis and one for the frequency as tabulated earlier with table()
+loop <- function(x, name){
+  x <- as.data.frame(as.matrix(x))
+  x$diagnosis <- rownames(x)
+  rownames(x) <- NULL
+  colnames(x) <- c(name, "diagnosis")
+  return(x)
+}
+prim <- loop(prim, "prim")
+sec <- loop(sec, "sec")
+ter <- loop(ter, "ter")
+prim1 <- loop(prim1, "prim1")
+sec1 <- loop(sec1, "sec1")
+ter1 <- loop(ter1, "ter1")
+prim2 <- loop(prim2, "prim2")
+sec2 <- loop(sec2, "sec2")
+ter2 <- loop(ter2, "ter2")
+prim3 <- loop(prim3, "prim3")
+sec3 <- loop(sec3, "sec3")
+ter3 <- loop(ter3, "ter3")
+# This is so we can merge prim, etc, by diagnosis into a icd9 summary table
+icd9_sum <- merge(prim, sec, by = "diagnosis")
+icd9_sum <- merge(icd9_sum, ter, by = "diagnosis")
+icd9_sum <- merge(icd9_sum, prim1, by = "diagnosis")
+icd9_sum <- merge(icd9_sum, sec1, by = "diagnosis")
+icd9_sum <- merge(icd9_sum, ter1, by = "diagnosis")
+icd9_sum <- merge(icd9_sum, prim2, by = "diagnosis")
+icd9_sum <- merge(icd9_sum, sec2, by = "diagnosis")
+icd9_sum <- merge(icd9_sum, ter2, by = "diagnosis")
+icd9_sum <- merge(icd9_sum, prim3, by = "diagnosis")
+icd9_sum <- merge(icd9_sum, sec3, by = "diagnosis")
+icd9_sum <- merge(icd9_sum, ter3, by = "diagnosis")
+# Rearrange by column prim in descending order with most common overrall primary diagnoses at the top
+icd9_sum <- arrange(icd9_sum, desc(prim))
+
+#Print the first 20 rows of icd9_sum
+print(xtable(head(icd9_sum, 20), caption = "Admission Level Analysis: ICD9 Frequency by Hospital_seq"))
+#head(icd9_sum, 20)
+# Write the resulting table into a csv file
+write.csv(icd9_sum, file = "icd9_sum.csv")
+```
+
+DRG analysis: 
+```{r, results = 'asis'}
+#DRGs are diagnosis groups used for cost calculations
+#I pulled 2 csv files
+#I can't find Ned's previous drg analysis codes so I just did the following briefly
+
+#The first one, DRG_Costsummary.csv, is already grouped by drg itemid and description and the frequent of each is counted, as well as the average cost-weight of the drg itemid.  
+drg.cosum <- read.csv("DRG_Costsummary.csv", sep = ",")
+print(xtable(drg.cosum, caption = "DRG frequency and cost summary"))
+
+#The second csv, DRG_table.csv, is the raw table pulled with the frequent flyer cohort's subject_ids
+drg <- read.csv("DRG_table.csv", sep = ",")
+#The drg table was used to come up with the cost summary table, drg.cosum, in sql
+
+#Check for completeness of drg:
+nrow(drg)
+length(unique(drg$subject_id)) #421
+length(unique(drg$hadm_id)) #1800
+
+
+#Analysis at admission level by hadm_id
+#Mean cost-wt for each admission
+drg.adm <- aggregate(drg$cost_weight, by = list(drg$hadm_id), FUN = mean, na.rm = TRUE)
+colnames(drg.adm) <- c("hadm_id", "mean_cost_wt")
+head(drg.adm)
+#Summary of mean cost-wt per admission
+summary(drg.adm$mean_cost_wt)
+
+hist(drg.adm$mean_cost_wt, breaks = length(drg.adm$mean_cost_wt))
+
+#Would be interesting to further explore if there's any relationship between mean_cost_wt per admission and the sequence of admssion
+```
+
+ICU LOS summary:
+```{r, results = 'asis'}
+#I changed all the com.dat to icu_detail, as well as the cases of colnames where needed, as icu_detail has more complete admission information than com.dat (which misses 190 rows of icu admissions)
+
+# Overall ICU LOS
+meanICUdays <- round(mean(icu_detail$icustay_los, na.rm = TRUE)/3600, 2)
+meanICUdays
+sdICUdays <- round(sd(icu_detail$icustay_los, na.rm = TRUE)/3600, 2)
+sdICUdays
+# Overall Hospital LOS
+meanHOSPITALdays <- round(mean(icu_detail$hospital_los, na.rm = TRUE)/3600, 2)
+meanHOSPITALdays
+sdHOSPITALdays <- round(sd(icu_detail$hospital_los, na.rm = TRUE)/3600, 2)
+sdHOSPITALdays
+
+# LOS break down by hospital admission sequence:
+LOS_mean <- aggregate(icu_detail[, c("icustay_los", "hospital_los")], by=list(icu_detail$hospital_seq), FUN= mean, na.rm = TRUE)
+LOS_sd <- aggregate(icu_detail[, c("icustay_los", "hospital_los")], by=list(icu_detail$hospital_seq), FUN= sd, na.rm = TRUE)
+colnames(LOS_mean) <- c("HOSPITAL_SEQ", "Mean_ICUSTAY_LOS","Mean_HOSPITAL_LOS")
+colnames(LOS_sd) <- c("HOSPITAL_SEQ", "sd_ICUSTAY_LOS","sd_HOSPITAL_LOS")
+LOS <- merge(LOS_mean, LOS_sd, by = "HOSPITAL_SEQ")
+LOS$Mean_ICU_DAYS <- round(LOS$Mean_ICUSTAY_LOS/3600, 2)
+LOS$sd_ICU_DAYS <- round(LOS$sd_ICUSTAY_LOS/3600, 2)
+LOS$Mean_HOSPITAL_DAYS <- round(LOS$Mean_HOSPITAL_LOS/3600, 2)
+LOS$sd_HOSPITAL_DAYS <- round(LOS$sd_HOSPITAL_LOS/3600, 2)
+
+# LOS summary
+LOS.sum <- LOS[, c("HOSPITAL_SEQ", "Mean_ICU_DAYS", "sd_ICU_DAYS", "Mean_HOSPITAL_DAYS", "sd_HOSPITAL_DAYS" )]
+LOS.sum$HOSPITAL_SEQ <- as.factor(LOS.sum$HOSPITAL_SEQ)
+head(LOS.sum)
+
+plot(LOS.sum$HOSPITAL_SEQ, LOS.sum$Mean_ICU_DAYS)
+# Aim to plot icu and hospital los as separate lines on same graph
+```
+
+Procedural events analysis:
+```{r, results = 'asis'}
+# The vent, vaso, dail and trach data were pulled with icustay_id using mimic2v26.icustay_detail table and matched with the respective mimic events table. Hopefully this means there are fewer missing admissions. Though there might still be some as icustay_detail table is just not complete overall
+
+# Patient vasopressor start and stop time
+vaso <- read.csv("Vasopressors.csv", sep = ",")
+# Check completeness: All rows were pulled for vaso and it seems pretty complete 
+length(unique(vaso$subject_id))
+length(unique(vaso$icustay_id))
+nrow(icu_detail)
+
+#Look for maximum of binary data (1) to determine which patients required vasopressors in one of their visits
+agg <- aggregate(vaso$vasopressors, by = list(vaso$subject_id), FUN=max)
+
+# Percentage of unique patients on vasopressors
+paste(round(length(agg$x[(agg$x == 1)])/nrow(agg)*100, 2), "%", sep = '')
+# "67.7%"
+
+# Patient ventilation start and stop time
+vent <- read.csv("frequentFlyerVentStat.csv", header = FALSE)
+colnames(vent) <- c("index", "subjectID", "icustay_id", "seq", "begin_time", "end_time")
+vent <- arrange(vent, subjectID, icustay_id)
+# Only patients who were vented and the associated icustay_ids were pulled in vent, so not really able to check completeness:
+length(unique(vent$subjectID))
+length(unique(vent$icustay_id))
+
+#Percentage of unique patients on ventilator
+paste(round(length(unique(vent$subjectID))/nrow(agg)*100, 2), "%", sep = '')
+# "83.61%"
+#?? is it both non-invasive ventilation (BiPAP or CPAP) and invasive mechanical ventilation
+
+## Dialysis and tracheostomy, yes or no
+dial <- read.csv("Dial_trach.csv", sep = ",", header = TRUE)
+# Need to check with Leo that the inclusion from MIMIC is correct
+
+#Check completeness:
+length(unique(dial$subject_id)) #418
+length(unique(dial$hadm_id)) #1571
+nrow(dial) #1571
+nrow(icu_detail) #2136
+#Lots of missing. 
+#MIMIC2v26.procedureevents table, from which tracheostomy and dialysis procedures were pulled, is identified with subject_id and hadm_id - this seems to be the step that introduced missing values.
+head(dial)
+
+#Patients who had tracheostomy, yes = 1, no = 0
+trach.dat <- aggregate(dial$tracheostomy, by = list(dial$subject_id), FUN = max)
+nrow(trach.dat)
+# 418 rows, ie 3 missing (sql check suggest this is because info for these 3 patients are missing from the procedureevents table)
+
+#Percentage of unique patients receiving tracheostomy
+paste(round(length(trach.dat$x[(trach.dat$x == 1)])/nrow(trach.dat)*100, 2), "%", sep = '')
+# "58.85%"
+# Note the % is only over 418 people due to missing value
+
+#Patients who had dialysis, yes = 1, no = 0
+rrt.dat <- aggregate(dial$dialysis, by = list(dial$subject_id), FUN = max)
+nrow(rrt.dat)
+# Also 418 rows for the same reason
+
+##Unique patients receiving dialysis
+paste(round(length(rrt.dat$x[(rrt.dat$x == 1)])/nrow(rrt.dat)*100, 2), "%", sep = '')
+"20.33%"
+# Also note the % is only over 418 people due to missing value
+
+
+#==========================
+###   Vasopressor Duration    ###
+
+#Now lets find out the average number of days that people who were vented or given vasopressor received the respective treatment
+
+#Create a convenient days on vasopressor data.frame
+pressor.dat <- vaso[, c("subject_id", "days_on_pressors")]
+#NA values to 0 indicating no vaso use
+pressor.dat$days_on_pressors[is.na(pressor.dat$days_on_pressors)] <- 0
+#Sum of time on vaso per patient
+pressor.ave <- pressor.dat %>% group_by(subject_id) %>% summarise(ave_days_on_pressor = round(mean(days_on_pressors, na.rm = TRUE), 2)) %>% arrange(desc(ave_days_on_pressor))
+#Check that we still have the correct number of patients, 421
+nrow(pressor.ave)
+#Distribution of average vasopresser use per patient
+hist(pressor.ave$ave_days_on_pressor, breaks = 421, ylab = "Average pressor days per patient", xlab = "Each bar is an individual patient")
+#Overall average number of vasopressor use days per patient per admission
+paste(round(mean(pressor.ave$ave_days_on_pressor), 2), "days", sep = " ")
+
+
+#==========================
+###   Ventilation Duration    ###
+#Extract Day and Time of Day
+begin.time <- strsplit(as.character(vent$begin_time), " ")
+end.time <- strsplit(as.character(vent$end_time), " ")
+
+#Look for : separating hr from min
+I <- grepl(":", unlist(begin.time))
+begin.vent.time <- unlist(begin.time)[I]
+begin.vent.split <- strsplit(begin.vent.time, ":")
+
+I <- grepl(":", unlist(end.time))
+end.vent.time <- unlist(end.time)[I]
+end.vent.split <- strsplit(end.vent.time, ":")
+
+#Converting hr/min to days
+vent.begin.minute <- NULL
+vent.begin.hour <- NULL
+vent.begin.time <- NULL
+for(i in 1:length(begin.vent.split)){
+      vent.begin.minute[i] <- as.numeric(begin.vent.split[[i]][2])/60
+      vent.begin.hour[i] <- as.numeric(begin.vent.split[[i]][1])
+      vent.begin.time[i] <- vent.begin.hour[i] + vent.begin.minute[i]
+}
+
+vent.end.minute <- NULL
+vent.end.hour <- NULL
+vent.end.time <- NULL
+for(i in 1:length(end.vent.split)){
+      vent.end.minute[i] <- as.numeric(end.vent.split[[i]][2])/60
+      vent.end.hour[i] <- as.numeric(end.vent.split[[i]][1])
+      vent.end.time[i] <- vent.end.hour[i] + vent.end.minute[i]
+}
+
+#Calculating begin and end time in days - hrs represented in decimal of days.
+vent.begin <- NULL
+vent.end <- NULL
+for(i in 1:length(begin.time)){
+      vent.begin[i] <- as.numeric(as.Date(begin.time[[i]][1], "%m/%d/%Y")) + vent.begin.time[i]/24
+      vent.end[i] <- as.numeric(as.Date(end.time[[i]][1], "%m/%d/%Y")) + vent.end.time[i]/24
+}
+
+#Calculate ventilation duration and add to vent table
+vent.duration <- vent.end - vent.begin #in days
+vent$duration <- vent.duration
+
+hist(vent$duration, breaks = length(vent.duration))
+
+#=========================
+
+# Dealing with missing values:
+## Vent only has subject_id of patients who were vented (352 unique subjectIDs), and not the whole 421 frequent flyer cohort id so not able to tell if any patient's info is missing...
+length(unique(vent$subjectID))
+## Vaso has the complete cohort of 421 patients
+length(unique(vaso$subject_id))
+## Dail (for dialysis and tracheostomy) only has 418 unique patient_ids, ie, 3 missing
+length(unique(dial$subject_id))
+## To find out the missing patient_ids, we'll compare dial$subject_id with vent$subject_id
+dt1 <- dial$subject_id
+dt2 <- vaso$subject_id
+dt_not_missing <- dt2 %in% dt1 #gives a logical vector
+dt_missing_id <- unique(dt2[!dt_not_missing])
+# So the missing subject_ids in the dialysis and tracheostomy .csv are: (6321 15485 22817)
+dt_missing_id
+## which are not actually the same as the missing_ids in the comorbidity data
+```
+
+Severity of illness - SOFA
+```{r, results = 'asis'}
+#We will analyse the first SOFA score of the first icustsay admission of each new hosptial admission using icu_detail 
+
+sofa <- icu_detail[icu_detail$icustay_seq == 1, c("icustay_id", "subject_id", "hadm_id", "sofa_first", "sofa_min", "sofa_max", "icustay_los", "hospital_seq", "hospital_los")]
+str(sofa)
+
+#Checking NA's
+#Check if selection criterion variable has NA or not:
+summary(is.na(icu_detail$icustay_seq)) #No missing
+#Check sofa for missing values:
+summary(is.na(sofa))
+#We are missing 140 of all sofa values
+#Number of sofa_first values that can be analysed: 1734
+length(na.omit(sofa$sofa_first))
+#Also, if we want to break down sofa score by hospital admission sequence, 82 hospital_seq are missing
+
+#Some SOFA stats:
+summary(sofa$sofa_first)
+#Break down sofa_first by admission sequence:
+#Need to remove NA first
+sofa.seq <- sofa[, c("sofa_first", "hospital_seq")]
+rmNA <- complete.cases(sofa.seq)
+sofa.seq <- sofa.seq[rmNA,]
+head(sofa.seq)
+summary(is.na(sofa.seq))
+#Summarise sofa_first by hospital_seq
+sofa.sum <- sofa.seq %>% group_by(hospital_seq) %>% 
+  summarise(sofa.mean = round(mean(sofa_first), 2), 
+            sofa.sd = round(sd(sofa_first), 2), 
+            sofa.min = min(sofa_first), 
+            sofa.max = max(sofa_first),
+            sofa.n = length(sofa_first),
+            sofa.95C.L = round(mean(sofa_first) - qnorm(0.975)*sd(sofa_first)/sqrt(length(sofa_first)), 2),
+            sofa.95C.R = round(mean(sofa_first) + qnorm(0.975)*sd(sofa_first)/sqrt(length(sofa_first)), 2))
+#head(sofa.sum)
+print(xtable(sofa.sum, caption = "Summary: sofa_first by hospital admission sequence"))
+
+#Plot mean sofa_first with 95% confidence interval error bars against hosptial_seq
+plot(sofa.sum$hospital_seq, sofa.sum$sofa.mean, type="n")
+with (
+  data = data.frame(x = sofa.sum$hospital_seq, 
+                    y = sofa.sum$sofa.mean,
+                    sd = sofa.sum$sofa.sd)
+  , expr = errbar(x, y, y+sd, y-sd, add=F, pch=1, cap=.015,
+                  , xlab = "hospital_seq", ylab = "mean_sofa_first"
+                  , errbar.col = "red")
+)
+title(main = "Mean sofa_first against hosptial admission sequence")
+
+#Plot mean sofa_first with 95% confidence interval error bars against hosptial_seq with x-axis logged
+plot(sofa.sum$hospital_seq, sofa.sum$sofa.mean, type="n")
+with (
+  data = data.frame(x = sofa.sum$hospital_seq, 
+                    y = sofa.sum$sofa.mean,
+                    sd = sofa.sum$sofa.sd)
+  , expr = errbar(x, y, y+sd, y-sd, add=F, pch=1, cap=.015, log="x",
+                  , xlab = "log(hospital_seq)"
+                  , ylab = "mean_sofa_first"
+                  , errbar.col = "red")
+)
+title(main = "Mean sofa_first against log of hosptial admission sequence")
+```
+
+Combine summaries of hospital_los, icustay_los, sofa scores, ventilation, vasopressor, dialysis and tracheotomy information:
+```{r, results = 'asis'}
+#They are all in the icu_detail table
+#Ideally I want tables like this
+              mean (days),   sd,    denominator_n,   missing_values
+hospital_los
+icustay_los
+vent_duration
+vaso_duration
+
+    mean_no_admissions, no_expire_flg, denominator_n, missing_values
+vent
+vaso
+dailysis
+trach
+sofa_AUC > some predictor number (need to do literature search)
+```
+
+MICU/FICU versus SICU versus CCU versus CSRU
+```{r, results = 'asis'}
+#Can use icu_detail to analyse this
+#I want a table like this:
+  total_n, mean_no_admissions, sd, mean_duration, sd, missing_values
+MICU/FICU
+SICU
+CCU
+CSRU
+```
+
+Admission location – ER, direct, urgent, SDA 
+```{r, results = 'asis'}
+#I haven't pulled this data yet
+#It's in the mimic2v26.demographics_detail table
+#Which has missing values from what we know
+
+#I want a table like this:
+        total_n, mean_no_admissions, sd, missing_values     
+ER
+Direct
+Urgent
+SDA
+```
+

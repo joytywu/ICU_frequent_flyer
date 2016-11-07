@@ -1,0 +1,642 @@
+---
+title: "FrequentFlyer_analysis"
+author: "Ned, Joy, Jonathan"
+date: "20 April 2015"
+output: pdf_document
+---
+
+The CSV files exported from MIMIC2.6 include:
+- MIMIC26_subject_id.csv (427 subjects, neonates included)
+- Hadmit_frequency.csv
+- First_hadm.csv
+- Second_hadm.csv
+- Third_hadm.csv
+- 4orMore_hadm.csv (You will need to change filename to something without a number)
+- neonate_icustayDetail.csv
+- Demographics.csv (From first ICU/hospital admission)
+- Comorbidities.csv (From first ICU/hospital admission)
+
+The CSV files are exported without column headers from Query Builder. The SQL codes and the column headers can be found in the WORD files shared in the group DropBox folder:
+https://www.dropbox.com/sh/ico2ey7bepmv19m/AAC6lw7I0rHkEZPFpjyqPXX6a?dl=0
+
+
+First we will read in the data, assign column headers and join the various_hadm tables:
+```{r}
+setwd("~/Documents/frequent flyer")
+
+## ICU stay detail data (excluding neonates):
+col_vec <- c("INDEX", "ICUSTAY_ID", "SUBJECT_ID", "GENDER", "DOB", "DOD", "EXPIRE_FLG", "SUBJECT_ICUSTAY_TOTAL_NUM", "SUBJECT_ICUSTAY_SEQ", "HADM_ID", "HOSPITAL_TOTAL_NUM", "HOSPITAL_SEQ", "HOSPITAL_FIRST_FLG", "HOSPITAL_LAST_FLG", "HOSPITAL_ADMIT_DT", "HOSPITAL_DISCH_DT", "HOSPITAL_LOS", "HOSPITAL_EXPIRE_FLG", "ICUSTAY_TOTAL_NUM", "ICUSTAY_SEQ", "ICUSTAY_FIRST_FLG", "ICUSTAY_LAST_FLG", "ICUSTAY_INTIME", "ICUSTAY_OUTTIME", "ICUSTAY_ADMIT_AGE", "ICUSTAY_AGE_GROUP", "ICUSTAY_LOS", "ICUSTAY_EXPIRE_FLG", "ICUSTAY_FIRST_CAREUNIT", "ICUSTAY_LAST_CAREUNIT", "ICUSTAY_FIRST_SERVICE", "ICUSTAY_LAST_SERVICE", "HEIGHT", "WEIGHT_FIRST", "WEIGHT_MIN", "WEIGHT_MAX", "SAPSI_FIRST", "SAPSI_MIN", "SAPSI_MAX", "SOFA_FIRST", "SOFA_MIN", "SOFA_MAX", "MATCHED_WAVEFORMS_NUM" ) #neonates table would have the same column headers
+First_hadm <- read.csv("First_hadm.csv", header = FALSE)
+Second_hadm <- read.csv("Second_hadm.csv", header = FALSE)
+Third_hadm <- read.csv("Third_hadm.csv", header = FALSE)
+fourPlus_hadm <- read.csv("fourPlus_hadm.csv", header = FALSE)
+##I had to change the file name for 4orMore_hadm.csv to fourPlus_hadm.csv. For some reason read.csv() doesn't read files with numbers in it!
+
+com.dat <- as.data.frame(rbind(First_hadm, Second_hadm, Third_hadm, fourPlus_hadm))
+colnames(com.dat) <- col_vec
+
+## Demographics data at first hospital admission:
+Demo <- read.csv("Demographics.csv", header = FALSE)
+colnames(Demo) <- c("INDEX", "SUBJECT_ID", "HADM_ID", "ADMIT_AGE", "GENDER", "DOD", "MARITAL_STATUS", "ETHNICITY", "OVERALL_PAYOR_GROUP", "RELIGION", "ADMISSION_TYPE", "ADMISSION_SOURCE", "HOSPITAL_EXPIRE_FLG", "EXPIRE_FLG")
+
+## Comorbidities data at first hospital admission:
+Comorb <- read.csv("Comorbidities.csv", header = FALSE)
+colnames(Comorb) <- c("INDEX", "SUBJECT_ID", "HADM_ID", "CATEGORY", "CONGESTIVE_HEART_FAILURE", "CARDIAC_ARRHYTHMIAS", "VALVULAR_DISEASE", "PULMONARY_CIRCULATION", "PERIPHERAL_VASCULAR", "HYPERTENSION", "PARALYSIS", "OTHER_NEUROLOGICAL", "CHRONIC_PULMONARY", "DIABETES_UNCOMPLICATED", "DIABETES_COMPLICATED", "HYPOTHYROIDISM", "RENAL_FAILURE", "LIVER_DISEASE", "PEPTIC_ULCER", "AIDS", "LYMPHOMA", "METASTATIC_CANCER", "SOLID_TUMOR", "RHEUMATOID_ARTHRITIS", "COAGULOPATHY", "OBESITY", "WEIGHT_LOSS", "FLUID_ELECTROLYTE", "BLOOD_LOSS_ANEMIA", "DEFICIENCY_ANEMIAS", "ALCOHOL_ABUSE", "DRUG_ABUSE", "PSYCHOSES", "DEPRESSION")
+
+## Hospital admission frequency by admission order:
+freq <- read.csv("Hadmit_frequency.csv", header = FALSE)
+colnames(freq) <- c("HOSPITAL_SEQ", "NUMBER_OF_PATIENTS")
+
+##Loading all libraries:
+library(gridBase, gridExtra)
+library(dplyr)
+library(lattice)
+library(survival)
+```
+
+Total number of frequent flyer patients excluding neonates = 421
+```{r}
+uniq_id <- unique(com.dat$SUBJECT_ID, na.rm = TRUE)
+length(uniq_id)
+```
+
+Hospital admission frequency by admission order:
+```{r}
+plot(freq, main = "N-th Admission frequency", xlab = "N-th admission", ylab = "Number of patients")
+```
+
+First 10 rows and last 3 rows of table:
+The 1st, 2nd and 3rd admission should all have 421 patients by study selection criteria but the 3rd admission only has 415 patients. There are some (null) values in hospital_seq column (and in many other columns) so I think this is the most likely reason why.
+```{r}
+head(freq, 10)
+## Unclear why there are 82 patients with 33 hospital admissions. Pulling the data for hospital_seq =33 in SQL showed no data for these patients...
+tail(freq, 3)
+```
+
+Average ICU LOS at N-th admission:
+```{r}
+LOS <- aggregate(com.dat$ICUSTAY_LOS, by=list(com.dat$HOSPITAL_SEQ), FUN=mean)
+LOS$mins <- 3600
+colnames(LOS) <- c("HOSPITAL_SEQ", "LOS_min", "mins")
+LOS$ICU_DAYS <- LOS$LOS_min/LOS$mins
+head(LOS)
+
+plot(LOS$HOSPITAL_SEQ, LOS$ICU_DAYS, main = "Average LOS at N-th Admission", xlab = "HOSPITAL_SEQ", ylab = "Average ICU LOS (days)")
+```
+
+Frequent flyers by age:
+```{r}
+plot(com.dat$HOSPITAL_SEQ, com.dat$ICUSTAY_ADMIT_AGE, main = "Age at N-th Admission", xlab = "N-th admission", ylab = "Admit Age" )
+```
+
+There are probably better plots than this but this plot seems to show many 'ultra-frequent-flyer' middle age ish.
+
+Demographics summary for first admission (Joy's codes):
+```{r}
+demtab <- Demo[, c("SUBJECT_ID", "ADMIT_AGE", "GENDER", "MARITAL_STATUS", "ETHNICITY", "OVERALL_PAYOR_GROUP", "RELIGION", "EXPIRE_FLG")]
+
+#Clean Admit_age:
+for (i in 1:nrow(demtab)) {
+  if (demtab$ADMIT_AGE[i] > 199.00){
+    demtab$ADMIT_AGE[i] = 92
+  }
+}
+
+#Clean and split gender into separate column
+demtab$GENDER <- as.character(demtab$GENDER)
+demtab$Male <- NULL
+demtab$Female <- NULL
+for (i in 1:nrow(demtab)) {
+  if (demtab$GENDER[i] == "M") {
+    demtab$Male[i] <- 1
+  }
+  if (demtab$GENDER[i] == "F") {
+    demtab$Male[i] <- 0
+  }
+  if (demtab$GENDER[i] == "M") {
+    demtab$Female[i] <- 0
+  }
+  if (demtab$GENDER[i] == "F") {
+    demtab$Female[i] <- 1
+  }
+}
+
+#Clean Marital status into Married:
+demtab$MARITAL_STATUS <- as.character(demtab$MARITAL_STATUS)
+demtab$Married <- NULL
+for (i in 1:nrow(demtab)) {
+  if (demtab$MARITAL_STATUS[i] == "MARRIED") {
+    demtab$Married[i] <- 1
+  }
+  else {
+    demtab$Married[i] <- 0
+  }
+}
+
+#Clean Ethnicity into Black, White, Other:
+levels(demtab$ETHNICITY)[c(6, 7, 8, 9, 10)] <- "OTHER"
+levels(demtab$ETHNICITY)[c(4, 5)] <- "HISPANIC"
+levels(demtab$ETHNICITY)[c(2, 3)] <- "BLACK"
+demtab$ETHNICITY <- as.character(demtab$ETHNICITY)
+demtab$Black <- NULL
+demtab$White <- NULL
+demtab$Asian <- NULL
+demtab$Hispanic <- NULL
+demtab$OtherEth <- NULL
+for (i in 1:nrow(demtab)) {
+  if (demtab$ETHNICITY[i] == "BLACK") {
+    demtab$Black[i] <- 1
+  }
+  else {
+    demtab$Black[i] <- 0
+  }
+  if (demtab$ETHNICITY[i] == "WHITE") {
+    demtab$White[i] <- 1
+  }
+  else {
+    demtab$White[i] <- 0
+  }
+  if (demtab$ETHNICITY[i] == "ASIAN") {
+    demtab$Asian[i] <- 1
+  }
+  else {
+    demtab$Asian[i] <- 0
+  }
+  if (demtab$ETHNICITY[i] == "HISPANIC") {
+    demtab$Hispanic[i] <- 1
+  }
+  else {
+    demtab$Hispanic[i] <- 0
+  }
+  if (demtab$ETHNICITY[i] == "OTHER") {
+    demtab$OtherEth[i] <- 1
+  }
+  else {
+    demtab$OtherEth[i] <- 0
+  }
+}
+
+#Clean payor group:
+levels(demtab$OVERALL_PAYOR_GROUP)[8] <- "OTHER"
+levels(demtab$OVERALL_PAYOR_GROUP)[c(3, 4, 5)] <- "MEDICARE/MEDICAID"
+levels(demtab$OVERALL_PAYOR_GROUP)[c(1, 2)] <- "OTHER"
+demtab$OVERALL_PAYOR_GROUP <- as.character(demtab$OVERALL_PAYOR_GROUP)
+demtab$Medicare_Medicaid <- NULL
+demtab$Private <- NULL
+demtab$Other_Payor <- NULL
+for (i in 1:nrow(demtab)) {
+  if (demtab$OVERALL_PAYOR_GROUP[i] == "MEDICARE/MEDICAID") {
+    demtab$Medicare_Medicaid[i] <- 1
+  }
+  else {
+    demtab$Medicare_Medicaid[i] <- 0
+  }
+  if (demtab$OVERALL_PAYOR_GROUP[i] == "PRIVATE") {
+    demtab$Private[i] <- 1
+  }
+  else {
+    demtab$Private[i] <- 0
+  }
+  if (demtab$OVERALL_PAYOR_GROUP[i] == "OTHER") {
+    demtab$Other_Payor[i] <- 1
+  }
+  else {
+    demtab$Other_Payor[i] <- 0
+  }
+}
+
+#Clean Expire_FLG to Died:
+demtab$EXPIRE_FLG <- as.character(demtab$EXPIRE_FLG)
+demtab$Died <- NULL
+for (i in 1:nrow(demtab)) {
+  if (demtab$EXPIRE_FLG[i] == "Y") {
+    demtab$Died[i] <- 1
+  }
+  else {
+    demtab$Died[i] <- 0
+  }
+}
+
+clean.demo <- demtab[, c("ADMIT_AGE", "Male", "Female", "Married", "Black", "White", "Hispanic", "OtherEth", "Medicare_Medicaid", "Private", "Other_Payor", "Died")]
+                         
+dem.table <- do.call(data.frame, 
+           list(mean = apply(clean.demo, 2, mean),
+                sd = apply(clean.demo, 2, sd),
+                median = apply(clean.demo, 2, median),
+                min = apply(clean.demo, 2, min),
+                max = apply(clean.demo, 2, max),
+                n = apply(clean.demo, 2, length)))
+
+dem.table
+
+#Knitr doesn't like gridtable for some reason...
+#<<setup>>=
+#g = tableGrob(dem.table)
+#<<draw-table, dev='png', dpi=150, fig.width=convertWidth(grobWidth(g), "in", value=TRUE), fig.height=convertHeight(grobHeight(g), "in", value=TRUE)>>=
+#grid.draw(g)
+#@
+
+#pdf(file = "Dem_Table.pdf")
+#grid.table(dem.table, core.just  = "center")
+#dev.off()
+```
+
+Age groups at first admission:
+```{r}
+age_adm1 <- Demo$ADMIT_AGE
+for (i in 1:length(age_adm1)) {
+  if (age_adm1[i] > 199.00){
+    age_adm1[i] <- 92
+  }
+}
+age_adm1 <- age_adm1[!is.na(age_adm1)]
+summary(age_adm1)
+
+par(mar = c(5,4,4,1))
+hist(age_adm1, main = "Age at first admission", xlab = "Age", breaks = 20, col = rainbow(20))
+```
+
+Gender proportions at first admission:
+```{r}
+gender <- Demo$GENDER
+gender <- factor(gender)
+summary(gender)
+prop.gender <- round(prop.table(table(gender)), 3)
+prop.gender
+par(mar = c(4,4,4,1))
+barplot(prop.gender, main = "Gender at First Admission", col = c("red", "blue"))
+```
+
+Marital Status for first admission (Joy's codes):
+```{r}
+MarS <- Demo$MARITAL_STATUS
+MarS <- factor(MarS)
+summary(MarS)
+
+levels(MarS)[6] <- "UNKNOWN"
+levels(MarS)[2] <- "SEPARATED"
+levels(MarS)[1] <- "UNKNOWN"
+summary(MarS)
+
+MarS.clean <- factor(MarS)
+
+prop.MarS <- round(prop.table(table(MarS.clean)), 3)
+prop.MarS
+par(mar = c(5, 4, 4, 1) + 0.1)
+barplot(sort(prop.MarS), main = "Martital Status", col = "orange", cex.names=0.75)   
+```
+
+Ethnicity breakdown for first admission (Ned's codes):
+```{r}
+eth <- Demo$ETHNICITY
+summary(eth)
+
+eth <- gsub("HISPANIC OR LATINO", "HISPANIC", eth)
+eth <- gsub("BLACK/AFRICAN AMERICAN", "BLACK", eth)
+eth <- gsub("MIDDLE EASTERN", "OTHER", eth)
+eth <- as.factor(eth)
+
+for (i in 1:length(eth)) {
+  if (eth[i] == "UNKNOWN/NOT SPECIFIED"){
+    eth[i] <- "OTHER"
+  }
+  if (eth[i] == "MULTI RACE ETHNICITY"){
+    eth[i] <- "OTHER"
+  }
+  if (eth[i] == "PATIENT DECLINED TO ANSWER"){
+    eth[i] <- "OTHER"
+  }
+  if (eth[i] == "HISPANIC OR LATINO"){
+    eth[i] <- "HISPANIC"
+  }
+  if (eth[i] == "BLACK/CAPE VERDEAN"){
+    eth[i] <- "BLACK"
+  }
+  if (eth[i] == "HISPANIC/LATINO - GUATEMALAN"){
+    eth[i] <- "HISPANIC"
+  }
+}
+
+eth.clean <- factor(eth)
+
+prop_eth <- round(prop.table(table((eth.clean))), 3)
+prop_eth
+barplot(sort(prop_eth), main = "Ethnicity", col = rainbow(5))
+```
+
+Payor groups on first admission (Joy's codes):
+```{r}
+payor <- Demo$OVERALL_PAYOR_GROUP
+summary(payor)
+
+payor_prop <- round(prop.table(table(payor)), 3)
+payor_prop
+lablist <- as.vector(c("Auto Liability", "Free Care", "MediCaid", "MediCare", "MediCare-Private", "Other", "Private", "Self-Pay"))
+par(mar = c(7, 4, 4, 2) + 0.1)
+barplot(sort(payor_prop), space = 0.08, main = "Overall Payor Group on 1st Hadm", xaxt = "n", beside = TRUE, col = "red")
+axis(1, labels = FALSE)
+text(1:8, par("usr")[3]- 0.05, srt = 35, adj = 1, labels = lablist, xpd = TRUE)
+```
+
+Religion at first admission (Jonathan's codes):
+```{r}
+rel <- Demo$RELIGION
+rel <- factor(rel)
+summary(rel)
+
+levels(rel)[15] <- "UNKNOWN"
+levels(rel)[14] <- "OTHER"
+levels(rel)[13] <- "CHRISTIAN"
+levels(rel)[12] <- "OTHER"
+levels(rel)[11] <- "UNKNOWN"
+levels(rel)[8] <- "CHRISTIAN"
+levels(rel)[7] <- "CHRISTIAN"
+levels(rel)[6] <- "CHRISTIAN"
+levels(rel)[5] <- "CHRISTIAN"
+levels(rel)[4] <- "CHRISTIAN"
+levels(rel)[2] <- "CHRISTIAN"
+levels(rel)[1] <- "UNKNOWN"
+summary(rel)
+
+rel.clean <- factor(rel)
+
+barplot(sort(table(rel.clean)), main = "Religion", col = "green", cex.names = 0.75)      
+```
+
+Admission Type at first admission (Jonathan's codes):
+```{r}
+adtyp <- Demo$ADMISSION_TYPE
+adtyp <- factor(adtyp)
+
+#adtyp <- adtyp[adtyp != "NEWBORN"]
+#adtyp <- factor(adtyp)
+
+summary(adtyp)
+
+prop.adtyp <- round(prop.table(table(adtyp)), 3)
+prop.adtyp
+
+barplot(sort(prop.adtyp), main = "Admission Type", col = c("red", "yellow", "blue"))
+```
+
+Admission Source at first admission:
+```{r}
+adsource <- Demo$ADMISSION_SOURCE
+adsource <- factor(adsource)
+summary(adsource)
+
+prop.adsource <- round(prop.table(table(adsource)), 3)
+prop.adsource
+
+labs <- as.vector(c("Clinic Referral", "ED Admit", "Physicial Referal", "Transfer from Hospital", "Transfer from Skilled Nurse"))
+par(mar = c(7, 4, 4, 2) + 0.1)
+barplot(sort(prop.adsource), space = 0.1, main = "Admission Source", xaxt = "n", col = "yellow")
+axis(1, labels = FALSE)
+text(1:5, par("usr")[3]- 0.05, srt = 35, adj = 1, labels = labs, xpd = TRUE)
+```
+
+
+Charting,  changes to severity scores, SAPS-I and SOFA, through admissions ordered by HOSPITAL_SEQ:
+
+SOFA_FIRST scores by hospital admission sequence (group codes):
+```{r}
+sofa <- com.dat[, c("HOSPITAL_SEQ", "SOFA_FIRST", "ICUSTAY_SEQ")]
+sofa[sofa == "(null)"] <- NA
+sofa <- sofa[complete.cases(sofa), ]
+sofa$SOFA_FIRST <- as.numeric(sofa$SOFA_FIRST)
+sofa <- filter(sofa, ICUSTAY_SEQ == 1)
+sof.tab <- group_by(sofa, HOSPITAL_SEQ) %>% summarise(sofa_ave = mean(SOFA_FIRST), sd = sd(SOFA_FIRST))
+
+x <- sof.tab$HOSPITAL_SEQ
+y <- sof.tab$sofa_ave
+sd <- sof.tab$sd
+
+plot (x, y, main = "FIRST SOFA score by Hospital Admission", xlab = "Hospital Admission Sequence", ylab = "SOFA_FIRST", ylim=c(0, max(y+3)))
+epsilon = 0.025
+for(i in 1:nrow(sof.tab)) {
+    up = y[i] + sd[i]
+    low = y[i] - sd[i]
+    segments(x[i],low , x[i], up)
+    segments(x[i]-epsilon, up , x[i]+epsilon, up)
+    segments(x[i]-epsilon, low , x[i]+epsilon, low)
+}
+
+```
+
+SAPS_FIRST scores by hospital admission sequence (group codes):
+```{r}
+saps <- com.dat[, c("HOSPITAL_SEQ", "SAPSI_FIRST", "ICUSTAY_SEQ")]
+saps[saps == "(null)"] <- NA
+saps <- saps[complete.cases(saps), ]
+saps$SAPSI_FIRST <- as.numeric(saps$SAPSI_FIRST)
+saps <- filter(saps, ICUSTAY_SEQ == 1)
+saps.tab <- group_by(saps, HOSPITAL_SEQ) %>% summarise(saps_ave = mean(SAPSI_FIRST), sd = sd(SAPSI_FIRST))
+
+x <- saps.tab$HOSPITAL_SEQ
+y <- saps.tab$saps_ave
+sd <- saps.tab$sd
+
+plot (x, y, main = "FIRST SAPS-I score by Hospital Admission", xlab = "Hospital Admission Sequence", ylab = "SAPS_FIRST", ylim=c(0, max(y+3)))
+epsilon = 0.025
+for(i in 1:nrow(saps.tab)) {
+    up = y[i] + sd[i]
+    low = y[i] - sd[i]
+    segments(x[i],low , x[i], up)
+    segments(x[i]-epsilon, up , x[i]+epsilon, up)
+    segments(x[i]-epsilon, low , x[i]+epsilon, low)
+}
+```
+
+Severity score, SAPS-I and SOFA, on first admission versus total number of hospital admission, "HOSPITAL_TOTAL_NUM":
+```{r}
+colnames(First_hadm) <- col_vec
+severity <- First_hadm[, c("HOSPITAL_TOTAL_NUM", "SAPSI_FIRST", "SOFA_FIRST")]
+str(severity)
+
+par(mar=c(5, 5, 4, 5))
+plot(severity$HOSPITAL_TOTAL_NUM, severity$SAPSI_FIRST, lwd=3, col="green", ann=FALSE, las=2,type='p')
+mtext("SAPSI_FIRST", side=2, line=2.5)
+par(new=TRUE)
+plot(severity$HOSPITAL_TOTAL_NUM, severity$SOFA_FIRST, ann=FALSE, axes=FALSE,col='red',type='p')
+mtext("SOFA_FIRST", side=4, line=2.5)
+title(main = "First_hadm severity scores vs Total number of Hadm", xlab = "HOSPITAL_TOTAL_NUM")
+axis(4)
+```
+
+Tracking individual patient's SAPS-I scores by hospital admission sequence (group codes):
+```{r}
+track.dat <- com.dat[, c("SUBJECT_ID", "HOSPITAL_SEQ", "SAPSI_FIRST", "ICUSTAY_SEQ")]
+track.dat[track.dat == "(null)"] <- NA
+track.dat <- track.dat[complete.cases(track.dat), ]
+track.dat$SAPSI_FIRST <- as.numeric(track.dat$SAPSI_FIRST)
+track.dat <- filter(track.dat, ICUSTAY_SEQ == 1)
+nrow(track.dat) 
+  
+track.dat <-group_by(track.dat, SUBJECT_ID) %>% mutate(subj.max = max(HOSPITAL_SEQ))
+nrow(track.dat)
+track.dat$color <- NULL
+for (i in 1:nrow(track.dat)){
+    if (track.dat$subj.max[i] <= 3){
+      track.dat$color[i] <- "1-3 Admissions"
+    }     
+    if (track.dat$subj.max[i] > 3 & track.dat$subj.max[i] <= 10){
+      track.dat$color[i] <- "4-10 Admissions"
+    }
+    if (track.dat$subj.max[i] > 10 & track.dat$subj.max[i] <= 20){
+      track.dat$color[i] <- "11-20 Admissions"
+    }
+    if (track.dat$subj.max[i] > 20){
+      track.dat$color[i] <- "> 20 Admissions"
+    }
+}
+nrow(track.dat)
+
+track.dat <- data.frame(track.dat)
+
+with(track.dat, xyplot(track.dat$SAPSI_FIRST ~ track.dat$HOSPITAL_SEQ, group = track.dat$color, auto.key = TRUE, xlab = "HOSPITAL_SEQ", ylab = "SAPSI_FIRST", main = "SAPS-I score by subject maximum total admissions"))
+
+high_user <- filter(track.dat, subj.max > 20)
+with(high_user, xyplot(high_user$SAPSI_FIRST ~ high_user$HOSPITAL_SEQ, group = high_user$SUBJECT_ID, auto.key = TRUE, xlab = "HOSPITAL_SEQ", ylab = "SAPSI_FIRST", main = "SAPS-I score for >20 Admissions"))
+``` 
+
+Survival post first ICU admission (group codes):
+```{r}
+survival <- com.dat[, c("ICUSTAY_ID", "SUBJECT_ID", "GENDER", "DOB", "DOD", "EXPIRE_FLG", "HOSPITAL_EXPIRE_FLG", "HOSPITAL_SEQ", "ICUSTAY_ADMIT_AGE", "HOSPITAL_ADMIT_DT")]
+survival <- arrange(survival, SUBJECT_ID, HOSPITAL_SEQ)
+
+survival$DOD <- gsub("([^ ]*).*", "\\1", survival$DOD)
+survival$DOB <- gsub("([^ ]*).*", "\\1", survival$DOB)
+survival$HOSPITAL_ADMIT_DT <- gsub("([^ ]*).*", "\\1", survival$HOSPITAL_ADMIT_DT)
+
+survival <- as.data.frame(survival)
+survival$DOD <- as.numeric(as.Date(survival$DOD, "%Y-%m-%d"))
+survival$DOB <- as.numeric(as.Date(survival$DOB, "%Y-%m-%d"))
+survival$HOSPITAL_ADMIT_DT <- as.numeric(as.Date(survival$HOSPITAL_ADMIT_DT, "%Y-%m-%d"))
+nrow(survival)
+head(survival, 3)
+
+#scurf <- aggregate(survival$HOSPITAL_ADMIT_DT ~ survival$SUBJECT_ID, min, data = survival)
+
+scurf <- survival %>% group_by(SUBJECT_ID) %>% filter(HOSPITAL_SEQ == min(HOSPITAL_SEQ)) %>% distinct(SUBJECT_ID)
+scurf$days <- scurf$DOD - scurf$HOSPITAL_ADMIT_DT
+scurf$EXPIRE_FLG <- as.numeric(scurf$EXPIRE_FLG)
+nrow(scurf)
+head(scurf)
+
+#Suppose all patients who are still alive at end of MIMIC2.6 data collection have a survival equal to the maximum survival time of other patients (who died)
+scurf$days[is.na(scurf$days)] <- max(na.omit(scurf$days))
+
+#http://www.statmethods.net/advstats/glm.html
+survobj <- with(scurf, Surv(days, EXPIRE_FLG))
+fit0 <- survfit(survobj~1, data=scurf)
+#summary(fit0)
+plot(fit0, xlab="Survival Time in Days", 
+    ylab="% Surviving since first admission", yscale=100,
+   main="Survival Distribution From First Admission") 
+
+scurf$GENDER <- as.numeric(scurf$GENDER)
+fit1 <- survfit(survobj~GENDER,data=scurf)
+plot(fit1, xlab="Survival Time in Days", ylab="% Surviving", yscale=100, col=c("red","blue"), main="Survival Distributions by Gender") 
+legend("topright", title="Gender", c("Male", "Female"), fill=c("red", "blue"))
+
+#Problem with above analysis is because the event times for each patient are randomly shifted into the future in the MIMIC data base, we do not know the chronological relationship between patients. For the patients who are still alive but admitted in the later years of data collection, they might appear to have survived longer given the above assumption. So in effect the survival curve is most likely shifted up and the actual survival is likely lower.
+#An alternative assumption is the use the average survival time of people who died in the datacollection period; though this is not perfect either.
+
+```
+
+Inpatient death - Nth admission that patient died:
+```{r}
+hosp_death <- com.dat[, c("SUBJECT_ID", "HOSPITAL_EXPIRE_FLG", "HOSPITAL_SEQ")]
+str(hosp_death)
+hosp_death <- filter(hosp_death, HOSPITAL_EXPIRE_FLG == "Y")
+hosp_death$HOSPITAL_EXPIRE_FLG <- factor(hosp_death$HOSPITAL_EXPIRE_FLG)
+
+#The this strange...The minimum hospital_seq should have been 3, not 2, by study selection criteria:
+summary(hosp_death)
+#The subject_id of the strange patient is:
+filter(hosp_death, HOSPITAL_SEQ == 2)
+
+#We will plot this anyway:
+death_tab <- table(hosp_death[, c("HOSPITAL_EXPIRE_FLG", "HOSPITAL_SEQ")])
+barplot(death_tab, main = "Inpatient death: Number of patients who died at Nth Hadm", xlab = "HOSPITAL_SEQ", ylab = "Number of patients", col = "red")
+```
+
+Outpatient survival and death - Time to death since last admission for patients who did not die in hospital:
+```{r}
+opt_death <- filter(com.dat[, c("SUBJECT_ID", "DOD", "EXPIRE_FLG", "HADM_ID", "HOSPITAL_SEQ", "HOSPITAL_LAST_FLG", "HOSPITAL_DISCH_DT", "HOSPITAL_EXPIRE_FLG", "ICUSTAY_SEQ", "ICUSTAY_LAST_FLG", "ICUSTAY_ADMIT_AGE")], HOSPITAL_EXPIRE_FLG == "N", HOSPITAL_LAST_FLG == "Y", ICUSTAY_LAST_FLG == "Y") %>% distinct(SUBJECT_ID)
+summary(opt_death)
+
+#Outpatient survival:
+barplot(table(opt_death$EXPIRE_FLG), main = "Outpatient Deaths", xlab = "N = Alive, Y = Dead", ylab = "Number of patients", col = c("blue", "red"))
+
+#Outpatient time/days to death from last admission:
+#opt_death <- filter(opt_surv, EXPIRE_FLG == "Y")
+opt_death$DOD <- gsub("([^ ]*).*", "\\1", opt_death$DOD)
+opt_death$HOSPITAL_DISCH_DT <- gsub("([^ ]*).*", "\\1", opt_death$HOSPITAL_DISCH_DT)
+
+opt_death <- as.data.frame(opt_death)
+opt_death$DOD <- as.numeric(as.Date(opt_death$DOD, "%Y-%m-%d"))
+opt_death$HOSPITAL_DISCH_DT <- as.numeric(as.Date(opt_death$HOSPITAL_DISCH_DT, "%Y-%m-%d"))
+str(opt_death)
+summary(opt_death)
+
+opt_death$days <- opt_death$DOD - opt_death$HOSPITAL_DISCH_DT
+#Suppose all patients who are still alive at end of MIMIC2.6 data collection have a survival equal to the maximum survival time of other patients (who died)
+opt_death$days[is.na(opt_death$days)] <- max(na.omit(opt_death$days))
+summary(opt_death$days)
+#Another piece of strange data...this person was discharged 177 post mortem??
+filter(opt_death, days < 0)
+#Excluding this strange person:
+opt_death <- filter(opt_death, days > 0)
+summary(opt_death)
+#Strange, not 1 but 4 people got removed after this filter...not sure why but I think this is probably due to poor data quality for DOD and/or Hospital discharge date.
+
+opt_death$EXPIRE_FLG <- as.numeric(opt_death$EXPIRE_FLG)
+#http://www.statmethods.net/advstats/glm.html
+survobj <- with(opt_death, Surv(days, EXPIRE_FLG))
+fit0 <- survfit(survobj~1, data=opt_death)
+#summary(fit0)
+plot(fit0, xlab="Survival Time in Days", 
+    ylab="% Still alive post last admission", yscale=100,
+   main="Survival Post Last Hospital Admission") 
+```
+
+Linear Regressions on first admission (Ned's codes):
+```{r}
+d.dat <- merge(Demo, Comorb, by = "SUBJECT_ID")
+dod <- as.character(d.dat$EXPIRE_FLG)
+
+for (i in 1:length(dod)){
+  if (dod[i] == "Y"){
+    dod[i] <- 1
+  }
+  else {
+    dod [i] <- 0
+  }
+}
+
+d.dat$dod <- as.numeric(dod)
+d.dat <- as.data.frame(d.dat)
+
+for (i in 1:length(colnames(d.dat))){
+  if (is.integer(d.dat[,i])){
+    d.dat[,i] <- as.numeric(d.dat[,i])
+  }
+}
+
+attach(d.dat)
+
+lin.reg <- glm(d.dat$dod ~ AIDS + ALCOHOL_ABUSE + BLOOD_LOSS_ANEMIA + CARDIAC_ARRHYTHMIAS + CHRONIC_PULMONARY + COAGULOPATHY + CONGESTIVE_HEART_FAILURE + DEFICIENCY_ANEMIAS + DEPRESSION + DIABETES_COMPLICATED + DIABETES_UNCOMPLICATED + DRUG_ABUSE + FLUID_ELECTROLYTE + HYPERTENSION + HYPOTHYROIDISM + LIVER_DISEASE + LYMPHOMA + METASTATIC_CANCER + OBESITY + OTHER_NEUROLOGICAL + PARALYSIS + PEPTIC_ULCER + PERIPHERAL_VASCULAR + PSYCHOSES + PULMONARY_CIRCULATION + RENAL_FAILURE + RHEUMATOID_ARTHRITIS + SOLID_TUMOR + VALVULAR_DISEASE + WEIGHT_LOSS, data = d.dat)
+
+summary(lin.reg)
+
+lin.reg <- glm(d.dat$dod ~ AIDS*ALCOHOL_ABUSE*DEPRESSION*DRUG_ABUSE*LIVER_DISEASE*OBESITY*PSYCHOSES, data = d.dat)
+summary(lin.reg)
+```
+
+
+Still to describe:
+
+ICU first and last careunit and service
+
+Comorbidities - BMI (too many missing values), break down and sum of comorbidities

@@ -1,0 +1,540 @@
+---
+title: "Patient Level Analysis"
+author: "Joy Wu"
+date: "8 May 2015"
+output: pdf_document
+---
+
+This Rmd aims to clean and analyse data at patient (or subject_id) level, and will tease out the following information:
+  Demographics
+  	Age
+		Sex
+		Race
+		Insurance
+		Zip code
+	Comorbidities (combine from all admissions in MIMIC 2.6)
+		Via elixhauser during the MIMIC 2.6 period (2001-2008)
+	Number of ICU visits during the MIMIC 2.6 period (2001-2008)
+-----
+Overall aim of project:
+Analysis:
+1)  Describe epidemiology of ICU frequent fliers, defined as patients admitted to ICU 3 or more times in 365 day period
+2)	Describe risk of in-hospital death, death at 30 days and death at 1 year of this population
+3)	Describe risk of future admissions to ICU over time
+4)	Describe whether ICU frequent fliers have changed over time.
+-----
+  
+Still to do:
+Outcomes level analysis - probably should be under patient level analysis too
+  In-hospital mortality 
+  30-day mortality
+	Death at 1 year
+
+----
+```{r, echo=FALSE}
+setwd("~/Desktop/Frequency_flyer")
+library(dplyr)
+library(gridBase, gridExtra)
+library(lattice)
+library(survival)
+library(icd9)
+library(xtable)
+library(Hmisc)
+```
+
+----
+
+Importing general ICU_details data csv:
+```{r}
+col_vec <- c("INDEX", "ICUSTAY_ID", "SUBJECT_ID", "GENDER", "DOB", "DOD", "EXPIRE_FLG", "SUBJECT_ICUSTAY_TOTAL_NUM", "SUBJECT_ICUSTAY_SEQ", "HADM_ID", "HOSPITAL_TOTAL_NUM", "HOSPITAL_SEQ", "HOSPITAL_FIRST_FLG", "HOSPITAL_LAST_FLG", "HOSPITAL_ADMIT_DT", "HOSPITAL_DISCH_DT", "HOSPITAL_LOS", "HOSPITAL_EXPIRE_FLG", "ICUSTAY_TOTAL_NUM", "ICUSTAY_SEQ", "ICUSTAY_FIRST_FLG", "ICUSTAY_LAST_FLG", "ICUSTAY_INTIME", "ICUSTAY_OUTTIME", "ICUSTAY_ADMIT_AGE", "ICUSTAY_AGE_GROUP", "ICUSTAY_LOS", "ICUSTAY_EXPIRE_FLG", "ICUSTAY_FIRST_CAREUNIT", "ICUSTAY_LAST_CAREUNIT", "ICUSTAY_FIRST_SERVICE", "ICUSTAY_LAST_SERVICE", "HEIGHT", "WEIGHT_FIRST", "WEIGHT_MIN", "WEIGHT_MAX", "SAPSI_FIRST", "SAPSI_MIN", "SAPSI_MAX", "SOFA_FIRST", "SOFA_MIN", "SOFA_MAX", "MATCHED_WAVEFORMS_NUM" ) #neonates table would have the same column headers
+First_hadm <- read.csv("First_hadm.csv", header = FALSE)
+Second_hadm <- read.csv("Second_hadm.csv", header = FALSE)
+Third_hadm <- read.csv("Third_hadm.csv", header = FALSE)
+fourPlus_hadm <- read.csv("fourPlus_hadm.csv", header = FALSE)
+##I had to change the file name for 4orMore_hadm.csv to fourPlus_hadm.csv. For some reason read.csv() doesn't read files with numbers in it!
+
+com.dat <- as.data.frame(rbind(First_hadm, Second_hadm, Third_hadm, fourPlus_hadm))
+colnames(com.dat) <- col_vec
+
+#Complete subject_ids for missing id checking later
+comdat_id <- unique(com.dat$SUBJECT_ID)
+length(comdat_id) #421
+```
+
+Demographics summary for first admission:
+```{r, results = 'asis'}
+## Summary of age, sex, race, insurance
+## Demographics.csv only captures the first hospital admission
+Demo <- read.csv("Demographics.csv", header = FALSE)
+colnames(Demo) <- c("INDEX", "SUBJECT_ID", "HADM_ID", "ADMIT_AGE", "GENDER", "DOD", "MARITAL_STATUS", "ETHNICITY", "OVERALL_PAYOR_GROUP", "RELIGION", "ADMISSION_TYPE", "ADMISSION_SOURCE", "HOSPITAL_EXPIRE_FLG", "EXPIRE_FLG")
+
+#Checking number of patients:
+nrow(Demo) #419 only
+#Who is missing:
+demo_id <- unique(Demo$SUBJECT_ID)
+demo_check <- comdat_id %in% demo_id
+demo_missing <- unique(comdat_id[!demo_check]) 
+## Missing subject_ids for demographics: 11235 13699
+demo_missing
+
+#Subsetting Demo to only columns we're interested in:
+demtab <- Demo[, c("SUBJECT_ID", "ADMIT_AGE", "GENDER", "MARITAL_STATUS", "ETHNICITY", "OVERALL_PAYOR_GROUP", "RELIGION", "EXPIRE_FLG")]
+# Checking for NA values:
+summary(is.na(demtab))
+## No NA's but might still have other equivalents, like NULL or UNKNOWN values
+
+#Clean Admit_age:
+summary(demtab$ADMIT_AGE) 
+## No NULL values
+for (i in 1:nrow(demtab)) {
+  if (demtab$ADMIT_AGE[i] >= 90.00){
+    # >= 90.00 as some patients over 90 still have their actual age recorded in the raw data
+    demtab$ADMIT_AGE[i] = 91.4 
+    #The median age of patients over 90 years old is 91.4
+  }
+}
+
+#Clean and split gender into separate column
+summary(demtab$GENDER) 
+# NO NULL values
+demtab$GENDER <- as.character(demtab$GENDER)
+demtab$Male <- NULL
+demtab$Female <- NULL
+for (i in 1:nrow(demtab)) {
+  if (demtab$GENDER[i] == "M") {
+    demtab$Male[i] <- 1
+  }
+  if (demtab$GENDER[i] == "F") {
+    demtab$Male[i] <- 0
+  }
+  if (demtab$GENDER[i] == "M") {
+    demtab$Female[i] <- 0
+  }
+  if (demtab$GENDER[i] == "F") {
+    demtab$Female[i] <- 1
+  }
+}
+
+#Clean Marital status into Married:
+summary(demtab$MARITAL_STATUS)
+## 9 NULL or UNKNOWN values
+# Change these levels to string "missing" to be reassigned as NA so we can count and keep track of them later.
+levels(demtab$MARITAL_STATUS)[c(6, 1)] <- "missing"
+demtab$MARITAL_STATUS <- as.character(demtab$MARITAL_STATUS)
+demtab$Married <- NULL
+for (i in 1:nrow(demtab)) {
+  if (demtab$MARITAL_STATUS[i] == "missing") {
+    demtab$Married[i] <- NA
+  }
+  else if (demtab$MARITAL_STATUS[i] == "MARRIED") {
+    demtab$Married[i] <- 1
+  }
+  else {
+    demtab$Married[i] <- 0
+  }
+}
+
+#Clean Ethnicity into Black, White, Other:
+summary(demtab$ETHNICITY)
+## 21 UNKNOWN, 2 DECLINED
+# Assign unknown and declined as "missing" value
+levels(demtab$ETHNICITY)[c(9, 10)] <- "UNKNOWN"
+# Assign middle eateren, multi-race and other as "other"
+levels(demtab$ETHNICITY)[c(6, 7, 8)] <- "OTHER"
+# Assign hispanic or latino and hispanic/latin-guatemalan as "hispanic"
+levels(demtab$ETHNICITY)[c(4, 5)] <- "HISPANIC"
+# Assign black/african american and black/cape verdean as "black"
+levels(demtab$ETHNICITY)[c(2, 3)] <- "BLACK"
+demtab$ETHNICITY <- as.character(demtab$ETHNICITY)
+demtab$Black <- NULL
+demtab$White <- NULL
+demtab$Asian <- NULL
+demtab$Hispanic <- NULL
+demtab$OtherEth <- NULL
+demtab$UnknownEth <- NULL
+for (i in 1:nrow(demtab)) {
+  if (demtab$ETHNICITY[i] == "BLACK") {
+    demtab$Black[i] <- 1
+  }
+  else {
+    demtab$Black[i] <- 0
+  }
+  if (demtab$ETHNICITY[i] == "WHITE") {
+    demtab$White[i] <- 1
+  }
+  else {
+    demtab$White[i] <- 0
+  }
+  if (demtab$ETHNICITY[i] == "ASIAN") {
+    demtab$Asian[i] <- 1
+  }
+  else {
+    demtab$Asian[i] <- 0
+  }
+  if (demtab$ETHNICITY[i] == "HISPANIC") {
+    demtab$Hispanic[i] <- 1
+  }
+  else {
+    demtab$Hispanic[i] <- 0
+  }
+  if (demtab$ETHNICITY[i] == "OTHER") {
+    demtab$OtherEth[i] <- 1
+  }
+  else {
+    demtab$OtherEth[i] <- 0
+  }
+  if (demtab$ETHNICITY[i] == "UNKNOWN") {
+    demtab$UnknownEth[i] <- 1
+  }
+  else {
+    demtab$UnknownEth[i] <- 0
+  }
+}
+
+#Clean payor group:
+summary(demtab$OVERALL_PAYOR_GROUP)
+## 0 NULL or UNKNOWN
+# Assign self-pay to other
+levels(demtab$OVERALL_PAYOR_GROUP)[8] <- "OTHER"
+# Aggregating the public insurance payors and assuming that medicare pays for majority of the cost in the medicare-private category so assigning this category to medicare/medicaid as well
+levels(demtab$OVERALL_PAYOR_GROUP)[c(3, 4, 5)] <- "MEDICARE/MEDICAID"
+# Assigning autoliability and free care to other
+levels(demtab$OVERALL_PAYOR_GROUP)[c(1, 2)] <- "OTHER"
+demtab$OVERALL_PAYOR_GROUP <- as.character(demtab$OVERALL_PAYOR_GROUP)
+demtab$Medicare_Medicaid <- NULL
+demtab$Private <- NULL
+demtab$Other_Payor <- NULL
+for (i in 1:nrow(demtab)) {
+  if (demtab$OVERALL_PAYOR_GROUP[i] == "MEDICARE/MEDICAID") {
+    demtab$Medicare_Medicaid[i] <- 1
+  }
+  else {
+    demtab$Medicare_Medicaid[i] <- 0
+  }
+  if (demtab$OVERALL_PAYOR_GROUP[i] == "PRIVATE") {
+    demtab$Private[i] <- 1
+  }
+  else {
+    demtab$Private[i] <- 0
+  }
+  if (demtab$OVERALL_PAYOR_GROUP[i] == "OTHER") {
+    demtab$Other_Payor[i] <- 1
+  }
+  else {
+    demtab$Other_Payor[i] <- 0
+  }
+}
+
+#Clean Expire_FLG to Died:
+summary(demtab$EXPIRE_FLG)
+## 0 NULL or UNKNOWN values
+demtab$EXPIRE_FLG <- as.character(demtab$EXPIRE_FLG)
+demtab$Died <- NULL
+for (i in 1:nrow(demtab)) {
+  if (demtab$EXPIRE_FLG[i] == "Y") {
+    demtab$Died[i] <- 1
+  }
+  else {
+    demtab$Died[i] <- 0
+  }
+}
+
+# Tabulating the cleaned and assorted demo data:
+clean.demo <- demtab[, c("ADMIT_AGE", "Male", "Female", "Married", "Black", "White", "Asian", "Hispanic", "OtherEth", "UnknownEth", "Medicare_Medicaid", "Private", "Other_Payor", "Died")]
+                         
+dem.table <- do.call(data.frame, 
+           list(mean = apply(clean.demo, 2, mean, na.rm = TRUE),
+                sd = apply(clean.demo, 2, sd, na.rm = TRUE),
+                median = apply(clean.demo, 2, median, na.rm = TRUE),
+                min = apply(clean.demo, 2, min, na.rm = TRUE),
+                max = apply(clean.demo, 2, max, na.rm = TRUE),
+                n_length = apply(clean.demo, 2, length),
+                n = apply(clean.demo, 2, sum, na.rm = TRUE),
+                missing_value = apply (clean.demo, 2, 
+                    function(x) sum(length(which(is.na(x))))
+                )))
+
+print(xtable(dem.table, caption = "Demographics"))
+
+
+# Need to deal with missing/NULL values in demographics
+```
+
+Comorbidities for first hospital admission only:
+```{r, results = 'asis'}
+# Combining comorbidites from all admission for each patient:
+
+# The follwoing csv only has comorbidities from first hospital admission 
+Comorb <- read.csv("Comorbidities.csv", header = FALSE)
+colnames(Comorb) <- c("INDEX", "SUBJECT_ID", "HADM_ID", "CATEGORY", "CONGESTIVE_HEART_FAILURE", "CARDIAC_ARRHYTHMIAS", "VALVULAR_DISEASE", "PULMONARY_CIRCULATION", "PERIPHERAL_VASCULAR", "HYPERTENSION", "PARALYSIS", "OTHER_NEUROLOGICAL", "CHRONIC_PULMONARY", "DIABETES_UNCOMPLICATED", "DIABETES_COMPLICATED", "HYPOTHYROIDISM", "RENAL_FAILURE", "LIVER_DISEASE", "PEPTIC_ULCER", "AIDS", "LYMPHOMA", "METASTATIC_CANCER", "SOLID_TUMOR", "RHEUMATOID_ARTHRITIS", "COAGULOPATHY", "OBESITY", "WEIGHT_LOSS", "FLUID_ELECTROLYTE", "BLOOD_LOSS_ANEMIA", "DEFICIENCY_ANEMIAS", "ALCOHOL_ABUSE", "DRUG_ABUSE", "PSYCHOSES", "DEPRESSION")
+
+#Checking for missing ids:
+nrow(Comorb) #418 only from the SQL file
+#Who is missing:
+como_id <- unique(Comorb$SUBJECT_ID)
+como_check <- comdat_id %in% como_id
+como_missing <- unique(comdat_id[!como_check]) 
+## Missing subject_ids for Co-morbidities: 11235 13699 19620
+como_missing 
+# Checking for NA values:
+summary(is.na(Comorb))
+## No NA's but might still have other equivalents, like NULL or UNKNOWN values
+
+#Calculate Elixhauser score:
+Comorb$Elixhauser_Sum <- rowSums(Comorb[,c(5:34)])
+Comorb <- arrange(Comorb, desc(Elixhauser_Sum))
+#Average Elixhauser score for first hospital admission:
+summary(Comorb$Elixhauser_Sum)
+
+```
+
+Aggregated Comorbidity information over all hospital admissions:
+```{r, results = 'asis'}
+# But Leo wants us to collate all commorbidities for each patients over every hospital admissions which means we need to repull the data
+
+# Analysing all comorbidities from All_comorb.csv
+# Co-morbidities from all admissions have already been collated via SQL querries for each patient in this csv file
+coall <- read.csv("All_comorb.csv", header = TRUE, sep = ",")
+
+#Examining the data:
+# Number of unique patient:
+length(unique(coall$subject_id)) ##421 patients
+# Structure of database:
+str(coall)
+# Checking for NA values:
+summary(is.na(coall)) 
+## there are no NA's or missing values for this dataset
+
+# Calculating elixhauser score for each patient/row
+coall$Elix_Sum <- rowSums(coall[,c(2:31)])
+# Overall mean and sd of Elixhauser scores
+elix_mean <- round(mean(coall$Elix_Sum), 2)
+elix_sd <- round(sd(coall$Elix_Sum), 2)
+elix_mean
+elix_sd
+
+#Co-morb analysis (done over 421 patient, full cohort):
+#Summing number of patient with each type (columns) of co-morbidites
+morb <- as.data.frame(colSums(coall[, c(2:31)]))
+#Calculating the proprotion of patients with each type of co-morbidities by dividing by the total number of patients (nrow = 421)
+morb$x <- round(morb[, 1]/nrow(coall), 2)
+#Reassigning more descriptive column headers
+colnames(morb) <- c("No_patients", "Percentage")
+#Need to reassign a column with the comorbidity names before rearranging as somehow the arrange function gets rid of the comorbidity information.
+morb$Elixhauser_Comorbidity <- colnames(coall[, c(2:31)])
+morb <- arrange(morb, desc(Percentage))
+
+# Summary of patient co-morbidities over all admissions
+print(xtable(morb, caption = "Elixhauser Comorbidities"))
+
+#Another way to do the same thing as above:
+##morb <- coall[, c(2:31)]
+##morb.table <- do.call(data.frame, 
+##           list(No_patients = apply(morb, 2, sum),
+##                Percentage = apply(morb, 2, mean)
+##                ))
+
+## Dealing with missing values
+#We want to know why there are only 418 patients in the Comorb table pulled from the first hospital admission info
+nrow(Comorb)
+#Whereas, there are 421 patient, the correct number, in the All comorbidities table, coall
+nrow(coall)
+#To find out the patient_ids of the 3 missing patients (which is important we seem to be missing them in later analysis as well)
+co1 <- Comorb$SUBJECT_ID
+co2 <- coall$subject_id
+not_missing <- co2 %in% co1 #logical vector
+missing_id <- co2[!not_missing]
+#Subject_id of patients who are missing comorbidity data in their first hospital admission (11235, 13699, 19620), but subsequently have comorbidity data in other admissions
+missing_id
+#Missing data here not as important as seemed to have been filled in from information in later admissions
+#It would seem that the subject_ids became missing if the sql querry had been merged with the icustay_detail table to select the patient and admission with hospital_seq. Maybe we need to reaxmine the sql query and avoid using icustay_detail table if possible. Though icustay_detail table has so much useful information such as admit_age, admission sequence, etc...
+```
+
+Number of ICU visits during the MIMIC 2.6 period (2001-2008)
+```{r, results = 'asis'}
+#The mimic2v26.icustay_detail table use to pull both icu_detail and com.dat table has many missing hadm_ids
+#So I went back and pulled the hospital admissions detail from the mimic2v26.admissions table instead.
+hadmID <- read.csv("Admissions_ids.csv", sep = ",")
+head(hadmID)
+str(hadmID)
+#By definition of the mimic database, all hospital admissions in the data base has an associated icu admission; hence we can use the hadm_id in mimic2v26.admissions as a surrogate to count the number of icu/separate hospital admissions
+
+#Number of unique subject_ids
+length(unique(hadmID$subject_id))
+#Number of unique hadm_ids
+length(unique(hadmID$hadm_id))
+
+#Get maximum number of hosptial admissions, hadm_count, for each patient:
+Admit_Count <- hadmID %>% group_by(subject_id) %>% count(subject_id)
+colnames(Admit_Count) <- c("subject_id", "hadm_count")
+Admit_Count <- as.data.frame(Admit_Count)
+head(Admit_Count)
+#Tally the number of patients with certain number of hospital admissions:
+hadm_tally <- Admit_Count %>% group_by(hadm_count) %>% count(hadm_count)
+colnames(hadm_tally) <- c("max_hadm_count", "no_patients")
+hadm_tally <- as.data.frame(hadm_tally)
+
+#Print the maximum hospital admission tally:
+print(xtable(hadm_tally, caption = "Distribution of Maximum number of Hospital admissions"))
+#It's good to see that lowest max_hadm_count is 3, which matches the frequent flyer's inclusion criteria.
+
+#Plot the hospital admission distribution
+barplot(hadm_tally$no_patients, names.arg = hadm_tally$max_hadm_count, main = "Distribution of maximum number of hospital admissions", xlab = "Maximum number of hospital admissions", ylab = "Number of patients")
+
+```
+
+Less optimal ICU number calculations:
+```{r, results = 'asis'}
+#To calculating the actual number of ICU visits during the MIMIC period will rely on the ICUSTAY_detail table, which has a lot of missing values.
+#ICUSTAY_TOTAL_NUM is not reliable as I manually checked and it miscounts the number for a significant number of patients
+#A more reliable way is hence simply count the number of rows or each patient as each row is supposedly a distinct ICU stay. This method will count all icustay admissions.
+
+#I pulled 2 tables from mimic2v26.icustay_details table. com.dat is pulled separately by sequence of admission and it omits any row with missing hadm_ids. Whereas icu_detail below is pulled with subject_id as the only criteria so has all the information/rows, including rows with missing hadm_ids.
+#Hence, we probably should use this instead to do the calculation:
+icu_detail <- read.csv("icudetail_ids.csv", sep = ",")
+str(icu_detail)
+
+#Let's check completelness:
+#Subject_id column is complete
+summary(is.na(icu_detail$subject_id))
+#Tally number of icu admissions by subject
+Icu_Count <- icu_detail %>% group_by(subject_id) %>%count(subject_id)
+colnames(Icu_Count) <- c("subject_id", "icu_count")
+Icu_Count <- as.data.frame(Icu_Count)
+#Tally the number of patients for certain number of maximum icu admissions
+icu_tally <- Icu_Count %>% group_by(icu_count) %>%count(icu_count)
+colnames(icu_tally) <- c("max_icu_count", "no_patients")
+icu_tally <- as.data.frame(icu_tally) 
+
+#Print the maximum icu admission tally:
+print(xtable(icu_tally, caption = "Distribution of Maximum number of ICU admissions"))
+#2 patients only have 2 ICU admissions. 
+#They are no incorrectly select patients.
+#We know that some hadm_ids and admissions are missing in the mimic2v26.icustay_detail table.
+
+#Plot the ICU admission distribution
+barplot(icu_tally$no_patients, names.arg = icu_tally$max_icu_count, main = "Distribution of maximum number of ICU admissions", xlab = "Maximum number of ICU admissions", ylab = "Number of patients")
+
+#Who are the 2 patients with only 2 icu admissions?
+
+```
+
+Testing com.dat completeness:
+```{r}
+#Subject_id column is complete
+summary(is.na(com.dat$SUBJECT_ID))
+#Tabulate number of ICU admission by subject_id
+subject_icuNo <- com.dat %>% group_by(SUBJECT_ID) %>% count(SUBJECT_ID) %>% arrange(desc(n))
+head(subject_icuNo)
+#Checking still got 421 subject_id
+nrow(subject_icuNo)
+#Summaarise number of ICU admissions
+icu.table <- table(subject_icuNo)
+icu.freq <- colSums(icu.table)
+icu.freq
+barplot(icu.freq, xlab = "Number of ICU admissions", ylab = "number of patients", main = "Number of ICU visits distribution during MIMIC2v26")
+
+# 5 patients had 2 ICU admissions only. The minimum should have been 3 by cohort selection criteria.
+icu2_id <- as.integer(unlist(subject_icuNo[subject_icuNo$n == 2, "SUBJECT_ID"]))
+# The subject_id of patients who only show 2 icu visits (2 rows) in com.dat are: 9865 13699 15749 18825 19472
+icu2_id
+# Subset the rows in com.dat with these subject_ids
+icu2_table <- filter(com.dat, SUBJECT_ID %in% icu2_id) %>% arrange(SUBJECT_ID)
+# The icustay_detail information was selected using the unique frequent flyer subject_id identified using the admit_dt in admissions table in MIMIC. Somehow some admissions are missing in the icustay_detail table for these 5 patients. The maximum hospital_seq is only 2 for these 5 patients.
+criteria.check <- filter(com.dat, HOSPITAL_SEQ >= 3)
+check.id <- unique(criteria.check$SUBJECT_ID)
+length(check.id) # Only 415, ie. 6 missing!
+notfreq <- comdat_id %in% check.id
+notfreq <- comdat_id[!notfreq]
+#Subject_ids of patients with hospital_seq < 3: 9865 13699 15749 18825 19472 20140
+notfreq
+#Pull all the rows from com.dat with these subject_ids
+icu2_table <- filter(com.dat, SUBJECT_ID %in% notfreq) %>% arrange(SUBJECT_ID)
+icu2_table
+#So yes, in fact patient 20140 had 2 icu admissions in his first hospital admission but only had 2 hospital admissions in total in com.dat, which is essentially the info from icustay_detail table
+#We will need to check the admission date details of the following patients in the mimic2v26.admissions table and may need to exclude these patients on the frequent flyer cohort if indeed they have less than 3 separate hospital admissions: 9865 13699 15749 18825 19472 20140
+```
+
+Outcomes level analysis: In-hospital mortality, 30-day mortality, Death at 1 year:
+```{r, results='asis'}
+#The information required should be in the icu_detail table and hadmID table
+#hadmID table has the complete admit and discharge date info
+
+mort <- icu_detail[, c("icustay_id", "subject_id", "hadm_id", "gender", "dod", "expire_flg", "hospital_admit_dt", "hospital_disch_dt", "hospital_expire_flg", "icustay_intime", "icustay_outtime", "icustay_admit_age", "icustay_expire_flg")]
+nrow(mort) #2136
+
+head(mort, 50)
+str(mort)
+#All the dates are currently in factor levels
+#Lots of missing dates for hospital admit and discharge dates
+#Expire_flg and icustay_expire_flg info complete
+#Hospital_expire_flg and dod info not complete
+
+#Checking if any dod is missing when expire_flg == Y
+mort.check <- mort[mort$expire_flg == "Y", ]
+mort.missing <- mort.check[mort.check$dod == "", ]
+nrow(mort.missing) # 0
+
+
+#Merge dod info with hadmID table by subject_id
+mortality <- merge(hadmID, unique(mort[, c("subject_id", "dod", "expire_flg")]), by = "subject_id")
+nrow(mortality)
+
+#Inhospital mortality should probably be recalculated separately as any one with either hospital_expire_flg or icustay_expire_flg == Y
+mort$inhosp_mort <- mort$hospital_expire_flg == "Y" | mort$icustay_expire_flg == "Y"
+hosp_mort <- unique(mort[ , c("subject_id", "inhosp_mort")])
+nrow(hosp_mort) #521, some have both true and false but should only take the true value if has both
+#Subjects who died in hospital
+hosp_mort_id <- hosp_mort[hosp_mort$inhosp_mort == TRUE, "subject_id"]
+hosp_mort$died_in_hosp <- hosp_mort$subject_id %in%  hosp_mort_id
+#Check duplicates taken out
+nrow(unique(hosp_mort[, c("subject_id", "died_in_hosp")])) #421
+
+#Merge inhospital mortality with rest of mortality table
+mortality <- merge(mortality, unique(hosp_mort[, c("subject_id", "died_in_hosp")]), by = "subject_id")
+
+#Select the last hospital admission for each subject
+mortality <- mortality %>% arrange(hadm_id) %>% group_by(subject_id) %>% filter(hadm_id == max(hadm_id)) %>% arrange(subject_id)
+
+#Reformat dates
+mortality$admit_dt <- as.Date(as.character(mortality$admit_dt),"%Y-%m-%d %H:%M:%S")
+mortality$disch_dt <- as.Date(as.character(mortality$disch_dt),"%Y-%m-%d %H:%M:%S")
+mortality$dod <- as.Date(as.character(mortality$dod),"%Y-%m-%d %H:%M:%S")
+str(mortality)
+
+#Calculating 30 days and 1 year mortality
+mortality$diff_days <- mortality$dod - mortality$disch_dt
+mortality$died_365 <- !is.na(mortality$diff_days) & mortality$diff_days <= 365
+mortality$died_30 <- !is.na(mortality$diff_days) & mortality$diff_days <= 30
+
+
+#Construction table for mortality calculations
+mort.data <- mortality[ , c("subject_id", "died_in_hosp", "died_30", "died_365", "expire_flg")]
+length(unique(mort.data$subject_id)) #421
+mort.data$died_in_hosp <- as.integer(mort.data$died_in_hosp)
+mort.data$died_30 <- as.integer(mort.data$died_30)
+mort.data$died_365 <- as.integer(mort.data$died_365)
+mort.data$expire_flg <- as.character(mort.data$expire_flg)
+for (i in 1:length(mort.data$expire_flg)){
+    if (mort.data$expire_flg[i] == "Y") {
+    mort.data$expire_flg[i] <- 1
+  }
+  else {
+    mort.data$expire_flg[i] <- 0
+  }
+}
+mort.data$expire_flg <- as.integer(mort.data$expire_flg)
+
+#Outputing morality table
+options("scipen" = 10)
+mort.table <- do.call(data.frame, 
+    list(no_patients = apply(mort.data,2, sum),
+         percentage = paste(round(apply(mort.data, 2, mean)*100, 2  ), "%", sep = " "),
+         cohort_no = apply(mort.data, 2, length),
+         missing_value = apply (mort.data, 2, 
+             function(x) sum(length(which(is.na(x))))
+    )))
+
+print(xtable(mort.table[2:5,], caption = "Mortality Summary"))
+```
+  

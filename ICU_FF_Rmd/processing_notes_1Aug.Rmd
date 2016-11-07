@@ -1,0 +1,75 @@
+# All .csv files exported on: 1st August
+# For arranging and combining discharge and nursing notes
+
+setwd("~/Desktop/Frequency_flyer")
+library(dplyr)
+
+# Reading in export discharge and nursing files
+pos_dis <- read.csv("pos_discharges_1Aug.csv", sep = ",")
+pos_nur <- read.csv("pos_nursing_1Aug.csv", sep = ",")
+neg_dis <- read.csv("neg_disch1_1Aug.csv", sep = ",")
+neg_nur <- read.csv("neg_nursing1_1Aug.csv", sep = ",")
+
+#-----------------------
+# This chunk of codes are for sorting out nursing notes only:
+
+# We want to keep track of which notes are from positive cohort and which are from the negative before rowbinding and mixing them up
+pos_nur$cohort <- 1
+neg_nur$cohort <- 0
+
+# Row bind and arrange nursing files
+tol_nur <- rbind(pos_nur, neg_nur)
+tol_nur <- arrange(tol_nur, subject_id, charttime)
+tol_nur <- tol_nur[, c(1:3, 5, 6, 10:12, 16)]
+tol_nur$cohort <- as.factor(tol_nur$cohort)
+
+# Investigating Nursing note quality issues:
+str(tol_nur)
+summary(is.na(tol_nur))
+# Nursing notes were queried in sql by first grouping the notes by hadm_id, then order by charttime and the first row (ie the first nursing note) for each hospital admission was selected
+# However this is a problem is the hadm_id value for an admission is NA - which is shown by the following. The first 2 rows obviously are from the same icustay admit.
+nur <- arrange(tol_nur, charttime)
+head(nur[1:5])
+# There are 2 rows with hadm_id == NA
+tol_nur$hadm_id[is.na(tol_nur$hadm_id)]
+#They are:
+NAhadm_IDrows <- filter(tol_nur, is.na(hadm_id))
+head(NAhadm_IDrows[1:5])
+# We will exclude by filtering out hadm_ids with NA values
+tol_nur <- filter(tol_nur, !is.na(hadm_id))
+# There are also NA values in icustay_id
+tol_nur$icustay_id[is.na(tol_nur$icustay_id)]
+# Which results than fewer unique icustay_ids than expected
+length(tol_nur$icustay_id[unique(tol_nur$icustay_id)])
+# But I think this is less of a problem and these rows should not be excluded as they all have unique hadm_id associated.
+NAicustayIDrows <- filter(tol_nur, is.na(icustay_id))
+head(NAicustayIDrows[1:5])
+# So all in all, we have this many total nursing notes to annotate:
+nrow(tol_nur) 
+# we lost 2 rows. 
+
+# After cleaning the rows out, we can now randomise the order of the rows to blind the positive and negative notes when imported into the GUI as long as the cohort column info is not imported
+set.seed(30);
+tol_nur$rand <- runif(nrow(tol_nur))
+# Then we can randomise by ordering by column "rand"
+tol_nur <- arrange(tol_nur, rand)
+
+# Now we can write the cleaned and randomised nursing notes to a .csv file for annotating in the GUI:
+write.csv(tol_nur, file = "combined_nursing_1Aug.csv", row.names = F)
+
+#------------
+# Future jobs:
+
+# Row bind and arrange discharge files
+tol_dis <- rbind(pos_dis, neg_dis)
+tol_dis <- arrange(tol_dis, subject_id, charttime)
+tol_dis <- tol_dis[, c(1:3, 5, 6, 10:12)]
+
+# Combing the discharge and nursing notes
+# Only use if we want to annotate the discharge summaries with the nursing notes - but probably not at this stage
+dis_nur <- rbind(tol_dis, tol_nur)
+dis_nur <- arrange(dis_nur, subject_id, charttime)
+
+# Writing the sorted files to csvs for manual coding by team
+write.csv(tol_dis, file = "combined_discharges_1Aug.csv", row.names = F)
+write.csv(dis_nur, file = "combined_notes_1Aug.csv", row.names = F)
